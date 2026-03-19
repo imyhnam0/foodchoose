@@ -1,0 +1,11 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "RDF93UGQTQ.com.imyhnam.foodchoose",
+        "paths": ["/join", "/join/*"]
+      }
+    ]
+  }
+}
