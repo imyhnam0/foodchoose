@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import '../models/room.dart';
 import '../services/room_service.dart';
 import '../services/gemini_service.dart';
+import '../utils/app_colors.dart';
 
 class WaitingScreen extends StatefulWidget {
   final String roomId;
@@ -13,15 +14,35 @@ class WaitingScreen extends StatefulWidget {
   State<WaitingScreen> createState() => _WaitingScreenState();
 }
 
-class _WaitingScreenState extends State<WaitingScreen> {
+class _WaitingScreenState extends State<WaitingScreen>
+    with SingleTickerProviderStateMixin {
   final _roomService = RoomService();
   final _geminiService = GeminiService();
   bool _recommending = false;
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+    _pulseAnimation = Tween<double>(begin: 0.92, end: 1.08).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    super.dispose();
+  }
 
   Future<void> _callGemini(Room room) async {
     if (_recommending) return;
     setState(() => _recommending = true);
-
     try {
       final prefs = await _roomService.getPreferences(room.id);
       final result = await _geminiService.recommendTop3(prefs);
@@ -29,8 +50,15 @@ class _WaitingScreenState extends State<WaitingScreen> {
           room.id, result.foods, result.reasons);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('추천 오류: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('추천 오류: $e'),
+            behavior: SnackBarBehavior.floating,
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            margin: const EdgeInsets.all(16),
+          ),
+        );
         setState(() => _recommending = false);
       }
     }
@@ -43,18 +71,17 @@ class _WaitingScreenState extends State<WaitingScreen> {
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return const Scaffold(
-              body: Center(child: CircularProgressIndicator()));
+              body:
+                  Center(child: CircularProgressIndicator(color: AppColors.primary)));
         }
         final room = snapshot.data!;
 
-        // 투표 단계로 넘어가면 결과 화면으로 이동
         if (room.status == 'voting' || room.status == 'done') {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             context.go('/results/${room.id}');
           });
         }
 
-        // 모두 제출했고 추천 단계가 아닌 경우 Gemini 호출
         final allSubmitted = room.submittedCount >= room.participantCount &&
             room.participantCount > 0;
         if (allSubmitted && room.status == 'inputting' && !_recommending) {
@@ -63,57 +90,26 @@ class _WaitingScreenState extends State<WaitingScreen> {
           });
         }
 
+        final isRecommending = _recommending || room.status == 'recommending';
+
         return Scaffold(
-          backgroundColor: const Color(0xFFFFF8F0),
-          appBar: AppBar(
-            backgroundColor: const Color(0xFFE85D04),
-            foregroundColor: Colors.white,
-            title: const Text('결과 기다리는 중'),
-            automaticallyImplyLeading: false,
-          ),
+          backgroundColor: AppColors.background,
           body: SafeArea(
             child: Padding(
-              padding: const EdgeInsets.all(24),
+              padding: const EdgeInsets.all(32),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Text('🍳', style: TextStyle(fontSize: 64)),
-                  const SizedBox(height: 24),
-                  if (_recommending || room.status == 'recommending') ...[
-                    const Text(
-                      '재미나이가\n음식을 추천하고 있어요...',
-                      textAlign: TextAlign.center,
-                      style:
-                          TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 24),
-                    const CircularProgressIndicator(
-                        color: Color(0xFFE85D04)),
+                  // 중앙 일러스트 영역
+                  _buildCenterIllustration(isRecommending),
+
+                  const SizedBox(height: 40),
+
+                  // 상태 텍스트
+                  if (isRecommending) ...[
+                    _buildRecommendingState(),
                   ] else ...[
-                    const Text(
-                      '친구들이 선호도를\n입력하고 있어요',
-                      textAlign: TextAlign.center,
-                      style:
-                          TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 32),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: LinearProgressIndicator(
-                        value: room.participantCount > 0
-                            ? room.submittedCount / room.participantCount
-                            : 0,
-                        minHeight: 16,
-                        backgroundColor: Colors.grey[200],
-                        valueColor: const AlwaysStoppedAnimation<Color>(
-                            Color(0xFFE85D04)),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      '${room.submittedCount} / ${room.participantCount}명 완료',
-                      style: const TextStyle(fontSize: 16, color: Colors.grey),
-                    ),
+                    _buildWaitingState(room),
                   ],
                 ],
               ),
@@ -121,6 +117,202 @@ class _WaitingScreenState extends State<WaitingScreen> {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildCenterIllustration(bool isRecommending) {
+    return Container(
+      width: 160,
+      height: 160,
+      decoration: BoxDecoration(
+        gradient: isRecommending
+            ? AppColors.purpleGradient
+            : AppColors.headerGradient,
+        borderRadius: BorderRadius.circular(48),
+        boxShadow: [
+          BoxShadow(
+            color: (isRecommending ? AppColors.secondary : AppColors.primary)
+                .withOpacity(0.3),
+            blurRadius: 28,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Center(
+        child: ScaleTransition(
+          scale: _pulseAnimation,
+          child: Text(
+            isRecommending ? '🤖' : '⏳',
+            style: const TextStyle(fontSize: 64),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRecommendingState() {
+    return Column(
+      children: [
+        const Text(
+          '재미나이가 분석 중이에요!',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 24,
+            fontWeight: FontWeight.w900,
+            color: AppColors.text,
+            letterSpacing: -0.3,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          '모두의 선호도를 바탕으로\n최선의 메뉴를 찾고 있어요 🔍',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 15,
+            color: AppColors.muted,
+            height: 1.6,
+          ),
+        ),
+        const SizedBox(height: 32),
+        // AI 처리 중 인디케이터
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+          decoration: BoxDecoration(
+            color: AppColors.secondaryMuted,
+            borderRadius: BorderRadius.circular(16),
+            border:
+                Border.all(color: AppColors.secondary.withOpacity(0.2)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  color: AppColors.secondary.withOpacity(0.7),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                'Gemini AI 추천 생성 중...',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.secondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildWaitingState(Room room) {
+    final submitted = room.submittedCount;
+    final total = room.participantCount;
+    final ratio = total > 0 ? submitted / total : 0.0;
+
+    return Column(
+      children: [
+        const Text(
+          '친구들을 기다리는 중...',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 24,
+            fontWeight: FontWeight.w900,
+            color: AppColors.text,
+            letterSpacing: -0.3,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          '모두가 선호도를 제출하면\n자동으로 AI 추천이 시작돼요!',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 15,
+            color: AppColors.muted,
+            height: 1.6,
+          ),
+        ),
+        const SizedBox(height: 32),
+
+        // 진행 상황 카드
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: AppColors.border),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.04),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Column(
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    '제출 현황',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.muted,
+                    ),
+                  ),
+                  Text(
+                    '$submitted / $total명 완료',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.primary,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: LinearProgressIndicator(
+                  value: ratio,
+                  minHeight: 12,
+                  backgroundColor: AppColors.border,
+                  valueColor:
+                      const AlwaysStoppedAnimation<Color>(AppColors.primary),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // 아바타 진행 표시
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(total, (i) {
+                  final done = i < submitted;
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 3),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(
+                        color: done ? AppColors.primary : AppColors.border,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  );
+                }),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

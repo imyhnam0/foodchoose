@@ -11,7 +11,7 @@ flutter analyze              # Static analysis / lint
 
 ---
 
-# 골라음식 앱 프로젝트 규칙
+# 뭐먹을건데 앱 프로젝트 규칙
 
 - 답변과 설명은 항상 한국어로 한다.
 - 코드 수정 전에는 먼저 Plan Mode 스타일로 작업 계획을 제시한다.
@@ -33,7 +33,7 @@ flutter analyze              # Static analysis / lint
 | 프레임워크 | Flutter (Dart, SDK ^3.8.1) |
 | 인증 | Firebase Auth (익명 로그인) |
 | DB | Cloud Firestore (실시간 동기화) |
-| AI 추천 | Gemini API (`gemini-1.5-flash`, `google_generative_ai: ^0.4.6`) |
+| AI 추천 | Gemini API (`gemini-2.5-flash-lite`, `google_generative_ai: ^0.4.6`) |
 | 라우팅 | go_router ^14.8.1 |
 | 딥링크 | app_links ^6.4.0 (`foodchoose://join`) |
 | 공유 | share_plus ^10.1.4 |

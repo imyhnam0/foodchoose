@@ -12,4 +12,8 @@ class AuthService {
     final result = await _auth.signInAnonymously();
     return result.user!;
   }
+
+  Future<void> signOut() async {
+    await _auth.signOut();
+  }
 }

@@ -15,7 +15,7 @@ class RoomService {
     return List.generate(6, (_) => chars[rng.nextInt(chars.length)]).join();
   }
 
-  Future<Room> createRoom(String hostId) async {
+  Future<Room> createRoom(String hostId, String nickname) async {
     final code = _generateCode();
     final docRef = _rooms.doc();
     final room = Room(
@@ -29,6 +29,7 @@ class RoomService {
       recommendations: [],
       recommendationReasons: {},
       votes: {},
+      participants: {hostId: nickname},
     );
     await docRef.set(room.toMap());
     return room;
@@ -43,10 +44,30 @@ class RoomService {
     return Room.fromFirestore(snap.docs.first);
   }
 
-  Future<void> joinRoom(String roomId) async {
+  Future<void> joinRoom(String roomId, String userId, String nickname) async {
     await _rooms.doc(roomId).update({
       'participantCount': FieldValue.increment(1),
+      'participants.$userId': nickname,
     });
+  }
+
+  Future<void> leaveRoom(String roomId, String userId) async {
+    await _db.runTransaction((transaction) async {
+      final docRef = _rooms.doc(roomId);
+      final snapshot = await transaction.get(docRef);
+      if (!snapshot.exists) return;
+
+      final data = snapshot.data() as Map<String, dynamic>;
+      final count = (data['participantCount'] as num?)?.toInt() ?? 0;
+      transaction.update(docRef, {
+        'participantCount': count > 0 ? count - 1 : 0,
+        'participants.$userId': FieldValue.delete(),
+      });
+    });
+  }
+
+  Future<void> deleteRoom(String roomId) async {
+    await _rooms.doc(roomId).delete();
   }
 
   Stream<Room> roomStream(String roomId) {
@@ -80,8 +101,7 @@ class RoomService {
   }
 
   Future<List<Preference>> getPreferences(String roomId) async {
-    final snap =
-        await _rooms.doc(roomId).collection('preferences').get();
+    final snap = await _rooms.doc(roomId).collection('preferences').get();
     return snap.docs.map(Preference.fromFirestore).toList();
   }
 
@@ -100,16 +120,10 @@ class RoomService {
   }
 
   Future<void> castVote(String roomId, String food) async {
-    await _rooms.doc(roomId).update({
-      'votes.$food': FieldValue.increment(1),
-    });
+    await _rooms.doc(roomId).update({'votes.$food': FieldValue.increment(1)});
   }
 
-  Future<void> setFinalFood(
-    String roomId,
-    String food,
-    String method,
-  ) async {
+  Future<void> setFinalFood(String roomId, String food, String method) async {
     await _rooms.doc(roomId).update({
       'finalFood': food,
       'decisionMethod': method,

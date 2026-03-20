@@ -16,32 +16,46 @@ class GeminiService {
   Future<({List<String> foods, Map<String, String> reasons})> recommendTop3(
     List<Preference> prefs,
   ) async {
-    final buffer = StringBuffer();
-    for (var i = 0; i < prefs.length; i++) {
-      final p = prefs[i];
-      final wantStr = p.wantFoods.isEmpty ? '없음' : p.wantFoods.join(', ');
-      final dontStr =
-          p.dontWantFoods.isEmpty ? '없음' : p.dontWantFoods.join(', ');
-      buffer.writeln('참가자 ${i + 1}:');
-      buffer.writeln('  먹고 싶은 음식: $wantStr');
-      buffer.writeln('  먹기 싫은 음식: $dontStr');
+    final wantCounts = <String, int>{};
+    final dontWantCounts = <String, int>{};
+
+    for (final p in prefs) {
+      for (final food in p.wantFoods) {
+        final normalized = food.trim();
+        if (normalized.isEmpty) continue;
+        wantCounts[normalized] = (wantCounts[normalized] ?? 0) + 1;
+      }
+      for (final food in p.dontWantFoods) {
+        final normalized = food.trim();
+        if (normalized.isEmpty) continue;
+        dontWantCounts[normalized] = (dontWantCounts[normalized] ?? 0) + 1;
+      }
     }
 
-    final prompt = '''
-당신은 음식 추천 AI 재미나이입니다.
-각 참가자의 선호도를 아래와 같이 개별 분석한 뒤, 모두가 만족할 음식 3가지를 추천하세요.
+    final buffer = StringBuffer()
+      ..writeln('전체 인원: ${prefs.length}명')
+      ..writeln('먹고 싶다는 의견: ${_formatCountSummary(wantCounts)}')
+      ..writeln('먹기 싫다는 의견: ${_formatCountSummary(dontWantCounts)}');
 
-[참가자별 선호도]
+    final prompt =
+        '''
+당신은 음식 추천 AI 재미나이입니다.
+아래 집계된 익명 선호도만 보고 모두가 만족할 음식 3가지를 추천하세요.
+
+[익명 집계 데이터]
 $buffer
 [분석 지침]
-- 각 참가자가 좋아하는 음식의 유형/카테고리(예: 분식류, 양식류)를 파악하세요.
-- 싫어하는 음식이 있다면 해당 유형을 피하세요.
-- 여러 참가자의 공통점을 찾아 모두가 만족할 3가지 음식을 선정하세요.
+- 여러 사람이 좋아한 메뉴와 피하고 싶어한 메뉴를 함께 고려하세요.
+- 싫어한다는 의견이 많은 메뉴나 그와 가까운 계열은 피하세요.
+- 추천 이유는 익명성이 드러나게 아주 짧게 쓰세요.
+- 절대 "참가자 1", "참가자2", "A님", "누구가" 같은 식별 표현을 쓰지 마세요.
+- "누군가 좋아함", "2명이 원함", "여러 명이 무난하게 먹기 좋음" 같은 표현만 사용하세요.
+- 각 reason은 20자 안팎의 짧은 한 문장으로 작성하세요.
 
 [출력 형식] JSON만 반환 (설명 없이):
 {
   "recommendations": [
-    {"food": "음식1", "reason": "참가자들의 선호를 분석해 선정한 이유 1~2문장"},
+    {"food": "음식1", "reason": "짧은 익명 이유"},
     {"food": "음식2", "reason": "..."},
     {"food": "음식3", "reason": "..."}
   ]
@@ -59,12 +73,40 @@ $buffer
     final reasons = <String, String>{};
     for (final item in list.take(3)) {
       final food = item['food'] as String;
-      final reason = item['reason'] as String;
+      final reason = _sanitizeReason(item['reason'] as String);
       foods.add(food);
       reasons[food] = reason;
     }
 
     return (foods: foods, reasons: reasons);
+  }
+
+  String _formatCountSummary(Map<String, int> counts) {
+    if (counts.isEmpty) return '없음';
+
+    final sorted = counts.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    return sorted.take(10).map((e) => '${e.key} ${e.value}명').join(', ');
+  }
+
+  String _sanitizeReason(String input) {
+    var text = input.trim();
+    text = text.replaceAll(RegExp(r'참가자\s*\d+'), '누군가');
+    text = text.replaceAll(RegExp(r'참가자들?'), '여러 명');
+    text = text.replaceAll(RegExp(r'[A-Z]\s*님'), '누군가');
+    text = text.replaceAll(RegExp(r'\b\d+번\b'), '누군가');
+    text = text.replaceAll(RegExp(r'\s+'), ' ');
+
+    if (text.length > 24) {
+      text = '${text.substring(0, 24).trim()}...';
+    }
+
+    if (text.isEmpty) {
+      return '여러 명이 무난하게 먹기 좋아요.';
+    }
+
+    return text;
   }
 
   String _extractJsonObject(String text) {

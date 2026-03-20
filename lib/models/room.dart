@@ -13,6 +13,7 @@ class Room {
   final Map<String, int> votes;
   final String? finalFood;
   final String? decisionMethod; // 'vote' | 'random'
+  final Map<String, String> participants; // { uid: nickname }
 
   const Room({
     required this.id,
@@ -27,6 +28,7 @@ class Room {
     required this.votes,
     this.finalFood,
     this.decisionMethod,
+    this.participants = const {},
   });
 
   factory Room.fromFirestore(DocumentSnapshot doc) {
@@ -45,6 +47,7 @@ class Room {
       votes: Map<String, int>.from(data['votes'] ?? {}),
       finalFood: data['finalFood'] as String?,
       decisionMethod: data['decisionMethod'] as String?,
+      participants: Map<String, String>.from(data['participants'] ?? {}),
     );
   }
 
@@ -59,6 +62,7 @@ class Room {
       'recommendations': recommendations,
       'recommendationReasons': recommendationReasons,
       'votes': votes,
+      'participants': participants,
       if (finalFood != null) 'finalFood': finalFood,
       if (decisionMethod != null) 'decisionMethod': decisionMethod,
     };
