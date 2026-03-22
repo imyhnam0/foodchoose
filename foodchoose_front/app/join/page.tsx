@@ -7,22 +7,52 @@ import { auth, db } from "@/lib/firebase";
 import { signInAnonymously, signOut } from "firebase/auth";
 import {
   collection,
-  query,
-  where,
-  limit,
-  getDocs,
-  getDoc,
-  doc,
-  onSnapshot,
-  updateDoc,
-  setDoc,
-  increment,
-  Timestamp,
   deleteDoc,
   deleteField,
+  doc,
+  getDoc,
+  getDocs,
+  increment,
+  limit,
+  onSnapshot,
+  query,
+  setDoc,
+  Timestamp,
+  updateDoc,
+  where,
 } from "firebase/firestore";
 
-/* ───── 타입 ───── */
+const FOOD_CATEGORIES = [
+  "버거",
+  "치킨",
+  "구이",
+  "피자",
+  "족발",
+  "보쌈",
+  "한식",
+  "분식",
+  "돈까스",
+  "찜/탕",
+  "중식",
+  "일식",
+  "회/해물",
+  "양식",
+  "커피/차",
+  "디저트",
+  "간식",
+  "아시안",
+  "샌드위치",
+  "샐러드",
+  "멕시칸",
+  "도시락",
+  "죽",
+] as const;
+
+interface PreferenceDoc {
+  wantFoods?: string[];
+  dontWantFoods?: string[];
+}
+
 interface Room {
   id: string;
   code: string;
@@ -30,13 +60,15 @@ interface Room {
   status: string;
   participantCount: number;
   submittedCount: number;
+  restaurantSubmittedCount: number;
   recommendations: string[];
   recommendationReasons: Record<string, string>;
   votes: Record<string, number>;
   votedCount: number;
+  selectedCategory?: string;
   finalFood?: string;
   decisionMethod?: string;
-  participants: Record<string, string>; // uid → 닉네임
+  participants: Record<string, string>;
 }
 
 type Phase =
@@ -45,12 +77,50 @@ type Phase =
   | "joining"
   | "error"
   | "lobby"
-  | "input"
-  | "waiting"
-  | "voting"
+  | "category_input"
+  | "category_waiting"
+  | "category_done"
+  | "restaurant_input"
+  | "restaurant_voting"
+  | "restaurant_revote"
   | "done";
 
-/* ─────────────────── 메인 ─────────────────── */
+function calculateTopFood(preferences: PreferenceDoc[]) {
+  const scores = Object.fromEntries(FOOD_CATEGORIES.map((food) => [food, 0]));
+  const wants = Object.fromEntries(FOOD_CATEGORIES.map((food) => [food, 0]));
+  const blockedFoods = new Set<string>();
+
+  preferences.forEach((preference) => {
+    new Set(preference.wantFoods ?? []).forEach((food) => {
+      if (!(food in scores)) return;
+      scores[food as keyof typeof scores] += 1;
+      wants[food as keyof typeof wants] += 1;
+    });
+    new Set(preference.dontWantFoods ?? []).forEach((food) => {
+      if (!(food in scores)) return;
+      blockedFoods.add(food);
+    });
+  });
+
+  const candidates = [...FOOD_CATEGORIES].filter(
+    (food) => !blockedFoods.has(food) && wants[food] > 0,
+  );
+
+  if (!candidates.length) return null;
+
+  const ranked = candidates.sort((a, b) => {
+    const scoreCompare = scores[b] - scores[a];
+    if (scoreCompare !== 0) return scoreCompare;
+    const wantCompare = wants[b] - wants[a];
+    if (wantCompare !== 0) return wantCompare;
+    return FOOD_CATEGORIES.indexOf(a) - FOOD_CATEGORIES.indexOf(b);
+  });
+
+  return {
+    food: ranked[0],
+  };
+}
+
 function JoinContent() {
   const searchParams = useSearchParams();
   const code = searchParams.get("code") ?? "";
@@ -61,48 +131,15 @@ function JoinContent() {
   const [uid, setUid] = useState("");
   const [nickname, setNickname] = useState("");
   const joinedRef = useRef(false);
-  const appCheckDoneRef = useRef(false);
   const roomUnsubRef = useRef<(() => void) | null>(null);
 
-  /* ── 0) 앱 열기 시도 → 1.5초 후 없으면 웹으로 진행 ── */
-  useEffect(() => {
-    if (!code) {
-      appCheckDoneRef.current = true;
-      initAuth();
-      return;
-    }
-
-    const appUrl = `foodchoose://join?code=${code}`;
-    window.location.href = appUrl;
-
-    let timer: ReturnType<typeof setTimeout>;
-    const handleVisibilityChange = () => {
-      if (document.hidden) clearTimeout(timer);
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    timer = setTimeout(() => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      if (!appCheckDoneRef.current) {
-        appCheckDoneRef.current = true;
-        initAuth();
-      }
-    }, 1500);
-
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code]);
-
-  /* ── 1) 익명 로그인 → 닉네임 입력 단계 ── */
   const initAuth = useCallback(async () => {
     if (!code) {
       setError("초대 코드가 없습니다.");
       setPhase("error");
       return;
     }
+
     try {
       const cred = await signInAnonymously(auth);
       setUid(cred.user.uid);
@@ -113,12 +150,16 @@ function JoinContent() {
     }
   }, [code]);
 
-  /* ── 2) 닉네임 확정 → 방 찾기 → 참가 → 실시간 구독 ── */
+  useEffect(() => {
+    void initAuth();
+  }, [initAuth]);
+
   const joinWithNickname = useCallback(
     async (name: string) => {
       if (!code || !uid) return;
       setNickname(name);
       setPhase("joining");
+
       try {
         const q = query(
           collection(db, "rooms"),
@@ -133,7 +174,6 @@ function JoinContent() {
         }
 
         const roomId = snap.docs[0].id;
-
         if (!joinedRef.current) {
           joinedRef.current = true;
           await updateDoc(doc(db, "rooms", roomId), {
@@ -153,10 +193,12 @@ function JoinContent() {
             status: d.status,
             participantCount: d.participantCount ?? 0,
             submittedCount: d.submittedCount ?? 0,
+            restaurantSubmittedCount: d.restaurantSubmittedCount ?? 0,
             recommendations: d.recommendations ?? [],
             recommendationReasons: d.recommendationReasons ?? {},
             votes: d.votes ?? {},
             votedCount: d.votedCount ?? 0,
+            selectedCategory: d.selectedCategory,
             finalFood: d.finalFood,
             decisionMethod: d.decisionMethod,
             participants: d.participants ?? {},
@@ -178,47 +220,24 @@ function JoinContent() {
 
   const leaveRoom = useCallback(async () => {
     if (!room || !uid) return;
-    const shouldLeave = window.confirm(
-      room.hostId === uid
-        ? "방장이 나가면 현재 방이 종료돼요. 나갈까요?"
-        : "지금 나가면 방에서 빠지게 돼요. 나갈까요?",
-    );
-    if (!shouldLeave) return;
 
     try {
       roomUnsubRef.current?.();
-      roomUnsubRef.current = null;
-
       if (room.hostId === uid) {
         await deleteDoc(doc(db, "rooms", room.id));
       } else {
-        const preferenceRef = doc(db, "rooms", room.id, "preferences", uid);
-        const preferenceSnap = await getDoc(preferenceRef);
-        const updates: Record<string, unknown> = {
+        await updateDoc(doc(db, "rooms", room.id), {
           participantCount: increment(-1),
           [`participants.${uid}`]: deleteField(),
-        };
-
-        if (preferenceSnap.exists()) {
-          updates.submittedCount = increment(-1);
-          await deleteDoc(preferenceRef);
-        }
-
-        await updateDoc(doc(db, "rooms", room.id), updates);
+        });
       }
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : "알 수 없는 오류";
-      window.alert(`방에서 나가지 못했어요: ${message}`);
-      return;
-    }
+    } catch {}
 
     joinedRef.current = false;
-    setRoom(null);
     await signOut(auth).catch(() => undefined);
     window.location.href = "/";
   }, [room, uid]);
 
-  /* ── 3) room.status 변경 → phase 전환 ── */
   useEffect(() => {
     if (!room) return;
     switch (room.status) {
@@ -226,18 +245,28 @@ function JoinContent() {
         setPhase("lobby");
         break;
       case "inputting":
-        setPhase((prev) => (prev === "waiting" ? prev : "input"));
+        setPhase(room.submittedCount > 0 ? "category_waiting" : "category_input");
         break;
-      case "voting":
-        setPhase("voting");
+      case "category_done":
+        setPhase("category_done");
+        break;
+      case "restaurant_inputting":
+        setPhase("restaurant_input");
+        break;
+      case "restaurant_voting":
+        setPhase("restaurant_voting");
+        break;
+      case "restaurant_revote_select":
+        setPhase("restaurant_revote");
         break;
       case "done":
         setPhase("done");
         break;
+      default:
+        break;
     }
-  }, [room?.status]);
+  }, [room]);
 
-  /* ── 렌더 ── */
   if (phase === "loading" || phase === "joining") return <LoadingView />;
   if (phase === "nickname") return <NicknameView onSubmit={joinWithNickname} />;
   if (phase === "error") return <ErrorView message={error} />;
@@ -245,1004 +274,703 @@ function JoinContent() {
 
   return (
     <>
-      {phase === "lobby" && <LobbyView room={room} onLeave={leaveRoom} uid={uid} />}
-      {phase === "input" && (
-        <InputView
-          room={room}
-          uid={uid}
-          nickname={nickname}
-          onDone={() => setPhase("waiting")}
-          onLeave={leaveRoom}
-          isHost={room.hostId === uid}
-        />
+      {phase === "lobby" && (
+        <LobbyView room={room} uid={uid} onLeave={leaveRoom} />
       )}
-      {phase === "waiting" && (
-        <WaitingView room={room} onLeave={leaveRoom} isHost={room.hostId === uid} />
+      {(phase === "category_input" || phase === "category_waiting") && (
+        <CategoryFlow room={room} uid={uid} />
       )}
-      {phase === "voting" && (
-        <VotingView room={room} uid={uid} onLeave={leaveRoom} isHost={room.hostId === uid} />
+      {phase === "category_done" && <CategoryDoneView room={room} uid={uid} />}
+      {phase === "restaurant_input" && (
+        <RestaurantInputView room={room} uid={uid} />
       )}
-      {phase === "done" && <DoneView room={room} onLeave={leaveRoom} isHost={room.hostId === uid} />}
+      {phase === "restaurant_voting" && (
+        <RestaurantVotingView room={room} uid={uid} />
+      )}
+      {phase === "restaurant_revote" && (
+        <RestaurantRevoteView room={room} uid={uid} />
+      )}
+      {phase === "done" && <DoneView room={room} uid={uid} />}
     </>
   );
 }
 
-/* ─────────────────── LoadingView ─────────────────── */
 function LoadingView() {
   return (
     <PageWrapper>
-      <GradientHeader>
-        <HeaderIcon />
-        <HeaderTitle>연결 중...</HeaderTitle>
-        <HeaderDesc>앱이 설치되어 있으면 자동으로 열립니다</HeaderDesc>
-      </GradientHeader>
-      <div className="flex flex-col items-center gap-5 px-7 pt-10">
+      <CenterCard title="연결 중..." desc="방 정보를 불러오고 있어요">
         <Spinner />
-        <p className="text-[13px] text-[#636E72] text-center">
-          앱이 없으면 잠시 후 웹에서 자동으로 진행됩니다
-        </p>
-      </div>
+      </CenterCard>
     </PageWrapper>
   );
 }
 
-/* ─────────────────── NicknameView ─────────────────── */
 function NicknameView({ onSubmit }: { onSubmit: (name: string) => void }) {
   const [value, setValue] = useState("");
-  const submit = () => {
-    const name = value.trim();
-    if (name) onSubmit(name);
-  };
-
   return (
     <PageWrapper>
-      <div className="flex min-h-[calc(100vh-40px)] items-center justify-center">
-        <div className="w-full max-w-[380px] rounded-[30px] border border-white/80 bg-white/94 p-6 shadow-[0_24px_54px_rgba(32,38,51,0.16)] backdrop-blur-sm">
-          <h1 className="text-[30px] font-black leading-[1.15] tracking-[-0.06em] text-[#202633]">
-            어떤 이름으로
-            <br />
-            들어갈까요?
-          </h1>
-
-          <div className="mt-5 rounded-[22px] border border-[#ebe6e0] bg-[linear-gradient(180deg,#fffdfa_0%,#fff4ed_100%)] px-5 py-4">
-            <input
-              type="text"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submit()}
-              placeholder="이름 입력"
-              maxLength={10}
-              autoFocus
-              className="w-full bg-transparent text-[22px] font-black tracking-[-0.04em] text-[#202633] placeholder:text-[#c7ccd5] outline-none"
-            />
-          </div>
-
-          <GradientButton onClick={submit} disabled={!value.trim()} className="mt-5">
-            입장하기
-          </GradientButton>
-        </div>
-      </div>
+      <CenterCard title="이름을 입력해주세요" desc="방에서 표시될 이름이에요">
+        <input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          className="w-full rounded-[16px] border border-[#DFE6E9] px-4 py-3 text-[18px] outline-none"
+          placeholder="이름 입력"
+        />
+        <GradientButton
+          className="mt-4"
+          onClick={() => onSubmit(value.trim())}
+          disabled={!value.trim()}
+        >
+          입장하기
+        </GradientButton>
+      </CenterCard>
     </PageWrapper>
   );
 }
 
-/* ─────────────────── ErrorView ─────────────────── */
 function ErrorView({ message }: { message: string }) {
   return (
     <PageWrapper>
-      <GradientHeader>
-        <HeaderIcon />
-        <HeaderTitle>오류 발생</HeaderTitle>
-      </GradientHeader>
-      <div className="px-7 pt-8 space-y-5 text-center">
-        <p className="text-[15px] text-[#636E72]">{message}</p>
+      <CenterCard title="오류" desc={message}>
         <GradientButton href="/">홈으로 돌아가기</GradientButton>
-      </div>
+      </CenterCard>
     </PageWrapper>
   );
 }
 
-/* ─────────────────── LobbyView ─────────────────── */
 function LobbyView({
   room,
-  onLeave,
   uid,
+  onLeave,
 }: {
   room: Room;
-  onLeave: () => void;
   uid: string;
+  onLeave: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
+  const isHost = room.hostId === uid;
 
-  const copyCode = () => {
-    navigator.clipboard?.writeText(room.code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+  const start = async () => {
+    await updateDoc(doc(db, "rooms", room.id), { status: "inputting" });
   };
-
-  const shareLink = () => {
-    const text = `🍽️ 뭐 먹을건데에 초대합니다!\n입장 코드: ${room.code}`;
-    if (navigator.share) {
-      navigator.share({ text });
-    } else {
-      navigator.clipboard?.writeText(text);
-    }
-  };
-
-  const entries = Object.entries(room.participants).sort(([a], [b]) =>
-    a === room.hostId ? -1 : b === room.hostId ? 1 : 0,
-  );
 
   return (
     <PageWrapper>
-      <RoomTopBar onLeave={onLeave} isHost={room.hostId === uid} />
-      {/* 헤더 */}
-      <div
-        className="bg-gradient-to-br from-[#FF7A45] to-[#FFA07A] w-full text-white rounded-b-[32px] px-6 pt-7 pb-7"
-        style={{ boxShadow: "0 8px 24px rgba(255,107,53,0.22)" }}
-      >
-        <div className="inline-flex items-center gap-1.5 bg-white/20 px-3 py-1.5 rounded-full mb-5">
-          <span className="text-sm">🍽️</span>
-          <span className="text-[13px] font-semibold">참가자</span>
-        </div>
-
-        {/* 코드 카드 */}
-        <div className="flex justify-center mb-2">
-          <button
-            onClick={copyCode}
-            className="bg-white rounded-[20px] px-7 py-[18px] flex items-center gap-3 transition hover:shadow-xl"
-            style={{ boxShadow: "0 6px 20px rgba(0,0,0,0.12)" }}
-          >
-            <span className="text-[38px] font-black tracking-[10px] text-[#FF8C69]">
-              {room.code}
-            </span>
-            <span className="text-[#FF8C69]/50 text-xl">📋</span>
-          </button>
-        </div>
-        <p className="text-center text-[12px] text-white/70 mb-5">
-          {copied ? "코드가 복사됐어요! 👍" : "탭하면 복사돼요"}
+      <TopBar onLeave={onLeave} />
+      <Card>
+        <p className="text-[14px] text-[#636E72]">입장 코드</p>
+        <p className="mt-2 text-[38px] font-black tracking-[0.18em] text-[#FF7A45]">
+          {room.code}
         </p>
-
-        {/* 공유 버튼 */}
-        <button
-          onClick={shareLink}
-          className="w-full flex items-center justify-center gap-2 border border-white/60 rounded-[12px] py-3 text-white text-[14px] font-medium hover:bg-white/10 transition"
-        >
-          <span>📤</span>
-          <span>친구에게 링크 공유</span>
-        </button>
-      </div>
-
-      {/* 참가자 섹션 */}
-      <div className="px-6 pt-6 pb-8 space-y-5">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-lg">👥</span>
-            <span className="text-[18px] font-extrabold text-[#2D3436]">
-              참가자 {room.participantCount}명
-            </span>
-          </div>
-          <span
-            className={`text-[12px] font-semibold px-[10px] py-1 rounded-full ${
-              room.participantCount >= 2
-                ? "text-[#00B894] bg-[#00B894]/10"
-                : "text-[#636E72] bg-[#DFE6E9]/60"
-            }`}
+      </Card>
+      <Card className="mt-4">
+        <p className="text-[18px] font-black text-[#202633]">
+          참가자 {room.participantCount}명
+        </p>
+        <div className="mt-4 space-y-2">
+          {Object.entries(room.participants).map(([id, name]) => (
+            <div key={id} className="rounded-[14px] border border-[#DFE6E9] bg-white px-4 py-3">
+              {name}
+            </div>
+          ))}
+        </div>
+      </Card>
+      <div className="mt-4">
+        {isHost ? (
+          <GradientButton
+            onClick={start}
+            disabled={room.participantCount < 2}
           >
-            {room.participantCount >= 2 ? "시작 가능" : "1명 더 필요"}
-          </span>
-        </div>
-
-        {/* 참가자 이름 리스트 */}
-        <div className="space-y-2">
-          {entries.length > 0
-            ? entries.map(([entryUid, name]) => {
-                const isHost = entryUid === room.hostId;
-                return (
-                  <div
-                    key={entryUid}
-                    className="flex items-center gap-3 bg-white rounded-[12px] border border-[#DFE6E9] px-4 py-3"
-                  >
-                    <div
-                      className={`w-9 h-9 rounded-[10px] flex items-center justify-center text-lg ${
-                        isHost ? "bg-[#FF8C69]/[0.12]" : "bg-[#FF6B35]/[0.08]"
-                      }`}
-                    >
-                      {isHost ? "👑" : "👤"}
-                    </div>
-                    <span className="flex-1 text-[16px] font-medium text-[#2D3436]">
-                      {name}
-                    </span>
-                    {isHost && (
-                      <span className="text-[11px] font-semibold text-[#FF8C69] bg-[#FF8C69]/[0.12] px-2 py-0.5 rounded-full">
-                        방장
-                      </span>
-                    )}
-                  </div>
-                );
-              })
-            : Array.from({ length: room.participantCount }).map((_, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-3 bg-white rounded-[12px] border border-[#DFE6E9] px-4 py-3 opacity-50"
-                >
-                  <div className="w-9 h-9 rounded-[10px] bg-[#DFE6E9]/60 flex items-center justify-center text-lg">
-                    👤
-                  </div>
-                  <span className="text-[16px] text-[#636E72]">
-                    {i === 0 ? "방장" : `참가자 ${i + 1}`}
-                  </span>
-                </div>
-              ))}
-        </div>
-
-        {/* 대기 메시지 */}
-        <div className="flex items-center justify-center gap-3 bg-[#FF8C69]/[0.08] rounded-[16px] border border-[#FF8C69]/15 px-5 py-4">
-          <Spinner small />
-          <span className="text-[14px] font-medium text-[#FF8C69]">
-            방장이 시작할 때까지 기다려주세요 👀
-          </span>
-        </div>
-      </div>
-    </PageWrapper>
-  );
-}
-
-/* ─────────────────── InputView ─────────────────── */
-function InputView({
-  room,
-  uid,
-  nickname,
-  onDone,
-  onLeave,
-  isHost,
-}: {
-  room: Room;
-  uid: string;
-  nickname: string;
-  onDone: () => void;
-  onLeave: () => void;
-  isHost: boolean;
-}) {
-  const [wants, setWants] = useState<string[]>([]);
-  const [donts, setDonts] = useState<string[]>([]);
-  const [wantInput, setWantInput] = useState("");
-  const [dontInput, setDontInput] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  const addTag = (
-    text: string,
-    list: string[],
-    setList: React.Dispatch<React.SetStateAction<string[]>>,
-    setInput: React.Dispatch<React.SetStateAction<string>>,
-  ) => {
-    const val = text.trim();
-    if (!val || list.includes(val)) return;
-    setList((prev) => [...prev, val]);
-    setInput("");
-  };
-
-  const submit = async () => {
-    if (wants.length < 3) {
-      alert("먹고 싶은 음식을 3개 이상 입력해주세요");
-      return;
-    }
-    setSubmitting(true);
-    try {
-      await setDoc(doc(db, "rooms", room.id, "preferences", uid), {
-        wantFoods: wants,
-        dontWantFoods: donts,
-        submittedAt: Timestamp.now(),
-      });
-      await updateDoc(doc(db, "rooms", room.id), {
-        submittedCount: increment(1),
-      });
-      onDone();
-    } catch (e: unknown) {
-      alert("오류: " + (e instanceof Error ? e.message : e));
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <PageWrapper>
-      <RoomTopBar onLeave={onLeave} isHost={isHost} />
-      <div
-        className="bg-gradient-to-br from-[#FF6B35] to-[#FF8C69] w-full text-white rounded-b-[32px] px-6 pt-8 pb-8 text-center"
-        style={{ boxShadow: "0 8px 24px rgba(255,107,53,0.22)" }}
-      >
-        <div className="inline-flex items-center gap-1.5 bg-white/20 px-3 py-1.5 rounded-full mb-3">
-          <span className="text-sm">🍽️</span>
-          <span className="text-[13px] font-semibold">{nickname}</span>
-        </div>
-        <h1 className="text-[28px] font-black tracking-[-0.5px] text-white">
-          음식 선호도 입력
-        </h1>
-      </div>
-
-      <div className="px-6 pt-6 pb-8 space-y-6">
-        {/* 먹고 싶은 음식 */}
-        <div>
-          <div className="flex items-center gap-3 mb-3">
-            <div className="flex h-14 w-14 items-center justify-center rounded-[16px] bg-[#f3fbf8]">
-              <Image
-                src="/like.png"
-                alt="먹고 싶은 음식 아이콘"
-                width={44}
-                height={44}
-                className="h-11 w-11 object-contain"
-              />
-            </div>
-            <div>
-              <p className="text-[15px] font-extrabold text-[#2D3436]">
-                먹고 싶은 음식
-              </p>
-              <p className="text-[11px] text-[#636E72]">최소 3개 입력해주세요</p>
-            </div>
-          </div>
-          <div className="flex gap-2 mb-3">
-            <input
-              type="text"
-              value={wantInput}
-              onChange={(e) => setWantInput(e.target.value)}
-              onKeyDown={(e) =>
-                e.key === "Enter" &&
-                addTag(wantInput, wants, setWants, setWantInput)
-              }
-              placeholder="예: 치킨, 피자..."
-              className="flex-1 bg-white border border-[#DFE6E9] rounded-[12px] px-4 py-3 text-[15px] text-[#2D3436] placeholder-[#DFE6E9] focus:outline-none focus:border-[#00B894] transition"
-            />
-            <button
-              onClick={() => addTag(wantInput, wants, setWants, setWantInput)}
-              className="w-12 h-12 rounded-[12px] bg-[#00B894] text-white text-2xl font-bold flex items-center justify-center shrink-0 transition hover:opacity-90"
-            >
-              +
-            </button>
-          </div>
-          <div className="flex flex-wrap gap-2 min-h-7">
-            {wants.map((tag) => (
-              <span
-                key={tag}
-                className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[13px] font-medium text-[#00B894] bg-[#00B894]/10 border border-[#00B894]/25"
-              >
-                {tag}
-                <button
-                  onClick={() => setWants((p) => p.filter((t) => t !== tag))}
-                  className="ml-1 opacity-60 hover:opacity-100"
-                >
-                  ✕
-                </button>
-              </span>
-            ))}
-          </div>
-        </div>
-
-        {/* 먹기 싫은 음식 */}
-        <div>
-          <div className="flex items-center gap-3 mb-3">
-            <div className="flex h-14 w-14 items-center justify-center rounded-[16px] bg-[#fff4ef]">
-              <Image
-                src="/hate.png"
-                alt="먹기 싫은 음식 아이콘"
-                width={44}
-                height={44}
-                className="h-11 w-11 object-contain"
-              />
-            </div>
-            <div>
-              <p className="text-[15px] font-extrabold text-[#2D3436]">
-                먹기 싫은 음식
-              </p>
-              <p className="text-[11px] text-[#636E72]">선택사항이에요</p>
-            </div>
-          </div>
-          <div className="flex gap-2 mb-3">
-            <input
-              type="text"
-              value={dontInput}
-              onChange={(e) => setDontInput(e.target.value)}
-              onKeyDown={(e) =>
-                e.key === "Enter" &&
-                addTag(dontInput, donts, setDonts, setDontInput)
-              }
-              placeholder="예: 초밥, 회..."
-              className="flex-1 bg-white border border-[#DFE6E9] rounded-[12px] px-4 py-3 text-[15px] text-[#2D3436] placeholder-[#DFE6E9] focus:outline-none focus:border-[#E17055] transition"
-            />
-            <button
-              onClick={() => addTag(dontInput, donts, setDonts, setDontInput)}
-              className="w-12 h-12 rounded-[12px] bg-[#E17055] text-white text-2xl font-bold flex items-center justify-center shrink-0 transition hover:opacity-90"
-            >
-              +
-            </button>
-          </div>
-          <div className="flex flex-wrap gap-2 min-h-7">
-            {donts.map((tag) => (
-              <span
-                key={tag}
-                className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[13px] font-medium text-[#E17055] bg-[#E17055]/10 border border-[#E17055]/25"
-              >
-                {tag}
-                <button
-                  onClick={() => setDonts((p) => p.filter((t) => t !== tag))}
-                  className="ml-1 opacity-60 hover:opacity-100"
-                >
-                  ✕
-                </button>
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <GradientButton
-          onClick={submit}
-          disabled={submitting || wants.length < 3}
-        >
-          {submitting
-            ? "제출 중..."
-            : wants.length < 3
-              ? `먹고 싶은 음식을 ${3 - wants.length}개 더 입력해주세요`
-              : "제출하기"}
-        </GradientButton>
-      </div>
-    </PageWrapper>
-  );
-}
-
-/* ─────────────────── WaitingView ─────────────────── */
-function WaitingView({
-  room,
-  onLeave,
-  isHost,
-}: {
-  room: Room;
-  onLeave: () => void;
-  isHost: boolean;
-}) {
-  const allDone = room.submittedCount >= room.participantCount;
-  const progress =
-    room.participantCount > 0
-      ? room.submittedCount / room.participantCount
-      : 0;
-
-  return (
-    <PageWrapper>
-      <RoomTopBar onLeave={onLeave} isHost={isHost} />
-      <div
-        className="bg-gradient-to-br from-[#FF6B35] to-[#FF8C69] w-full text-white rounded-b-[32px] px-6 pt-8 pb-8 text-center"
-        style={{ boxShadow: "0 8px 24px rgba(255,107,53,0.22)" }}
-      >
-        <h1 className="text-[28px] font-black tracking-[-0.5px]">
-          결과 기다리는 중
-        </h1>
-      </div>
-      <div className="px-7 pt-10 pb-8 flex flex-col items-center">
-        {/* 계란 모양 일러스트 */}
-        <div className="relative flex items-center justify-center mb-8">
-          {/* 글로우 */}
-          <div className="absolute w-[150px] h-[150px] rounded-full bg-[radial-gradient(circle,rgba(255,107,53,0.28)_0%,transparent_70%)]" />
-          {/* 계란 (oval) */}
-          <div
-            className="relative flex items-center justify-center bg-gradient-to-br from-[#FF7A45] to-[#FFB07A] text-[52px]"
-            style={{
-              width: 108,
-              height: 143,
-              borderRadius: "50%",
-              animation: "pulse 1.2s ease-in-out infinite alternate",
-            }}
-          >
-            🍳
-          </div>
-        </div>
-
-        {allDone ? (
-          <>
-            <p className="text-[22px] font-black tracking-[-0.04em] text-[#2D3436] text-center mb-2">
-              분석중...
-            </p>
-            <p className="text-[14px] text-[#636E72] text-center leading-6 mb-6">
-              모두의 선호도를 바탕으로
-              <br />
-              최선의 메뉴를 찾고 있어요 🔍
-            </p>
-            <div className="flex items-center gap-3 bg-[#FF8C69]/[0.08] rounded-[16px] border border-[#FF8C69]/15 px-5 py-3">
-              <Spinner small />
-              <span className="text-[14px] font-semibold text-[#FF8C69]">AI 추천 생성 중...</span>
-            </div>
-          </>
+            {room.participantCount < 2 ? "2명 이상 모여야 시작해요" : "지금 시작하기"}
+          </GradientButton>
         ) : (
-          <>
-            <p className="text-[22px] font-black tracking-[-0.04em] text-[#2D3436] text-center mb-2">
-              친구들을 기다리는 중...
-            </p>
-            <p className="text-[14px] text-[#636E72] text-center leading-6 mb-8">
-              모두가 선호도를 제출하면
-              <br />
-              자동으로 AI 추천이 시작돼요!
-            </p>
-            <div className="w-full bg-white rounded-[20px] border border-[#DFE6E9] p-5 shadow-[0_4px_12px_rgba(0,0,0,0.04)]">
-              <div className="flex justify-between mb-3">
-                <span className="text-[13px] font-medium text-[#636E72]">제출 현황</span>
-                <span className="text-[15px] font-extrabold text-[#FF6B35]">
-                  {room.submittedCount} / {room.participantCount}명 완료
-                </span>
-              </div>
-              <div className="w-full bg-[#DFE6E9] rounded-full h-3 overflow-hidden mb-3">
-                <div
-                  className="bg-gradient-to-r from-[#FF6B35] to-[#FF8C69] h-full rounded-full transition-all duration-500"
-                  style={{ width: `${progress * 100}%` }}
-                />
-              </div>
-              <div className="flex justify-center gap-2 mt-1">
-                {Array.from({ length: room.participantCount }).map((_, i) => (
-                  <div
-                    key={i}
-                    className={`w-2.5 h-2.5 rounded-full transition-colors duration-300 ${
-                      i < room.submittedCount ? "bg-[#FF6B35]" : "bg-[#DFE6E9]"
-                    }`}
-                  />
-                ))}
-              </div>
-            </div>
-          </>
+          <Card>방장이 시작할 때까지 기다려주세요</Card>
         )}
       </div>
     </PageWrapper>
   );
 }
 
-/* ─────────────────── VotingView ─────────────────── */
-function VotingView({
-  room,
-  uid,
-  onLeave,
-  isHost,
-}: {
-  room: Room;
-  uid: string;
-  onLeave: () => void;
-  isHost: boolean;
-}) {
-  const [myVotes, setMyVotes] = useState<Set<string>>(new Set());
-  const [voteSubmitted, setVoteSubmitted] = useState(false);
-  const medals = ["1", "2", "3"];
-  const rankBg = ["#FFF8E7", "#F5F5F5", "#FDF3EB"];
-  const rankColor = ["#FDB74A", "#9E9E9E", "#CD7F32"];
-  const totalVotes = Object.values(room.votes).reduce((a, b) => a + b, 0);
-  const allVoted =
-    room.participantCount > 0 && room.votedCount >= room.participantCount;
+function CategoryFlow({ room, uid }: { room: Room; uid: string }) {
+  const [wants, setWants] = useState<string[]>([]);
+  const [donts, setDonts] = useState<string[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
 
-  // 재투표 감지: votedCount가 0으로 리셋되면 로컬 상태 초기화
   useEffect(() => {
-    if (room.votedCount === 0 && voteSubmitted) {
-      setMyVotes(new Set());
-      setVoteSubmitted(false);
+    if (
+      room.submittedCount >= room.participantCount &&
+      room.participantCount > 0 &&
+      room.status === "inputting"
+    ) {
+      const finalize = async () => {
+        const snap = await getDocs(collection(db, "rooms", room.id, "preferences"));
+        const prefs = snap.docs.map((d) => d.data() as PreferenceDoc);
+        const result = calculateTopFood(prefs);
+        if (!result) {
+          await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
+          await updateDoc(doc(db, "rooms", room.id), {
+            submittedCount: 0,
+            recommendationReasons: {
+              __systemMessage:
+                "누군가 싫어하는 메뉴 때문에 후보가 남지 않았어요. 다시 골라주세요.",
+            },
+          });
+          return;
+        }
+        await updateDoc(doc(db, "rooms", room.id), {
+          status: "category_done",
+          selectedCategory: result.food,
+          recommendationReasons: {},
+          recommendations: [],
+          votes: {},
+          votedCount: 0,
+          finalFood: deleteField(),
+          decisionMethod: "weighted",
+        });
+      };
+      void finalize();
     }
-  }, [room.votedCount, voteSubmitted]);
+  }, [room]);
 
-  const toggleVote = (food: string) => {
-    if (voteSubmitted) return;
-    setMyVotes((prev) => {
-      const next = new Set(prev);
-      if (next.has(food)) next.delete(food);
-      else next.add(food);
-      return next;
-    });
+  const toggle = (
+    food: string,
+    current: string[],
+    setCurrent: React.Dispatch<React.SetStateAction<string[]>>,
+    other: string[],
+    setOther: React.Dispatch<React.SetStateAction<string[]>>,
+  ) => {
+    if (current.includes(food)) {
+      setCurrent((prev) => prev.filter((v) => v !== food));
+      return;
+    }
+    setCurrent((prev) => [...prev, food]);
+    if (other.includes(food)) {
+      setOther((prev) => prev.filter((v) => v !== food));
+    }
   };
 
-  const submitVotes = async () => {
-    if (voteSubmitted || myVotes.size === 0) return;
-    setVoteSubmitted(true);
-    const updates: Record<string, unknown> = { votedCount: increment(1) };
-    myVotes.forEach((food) => {
-      updates[`votes.${food}`] = increment(1);
+  const submit = async () => {
+    if (!wants.length) return;
+    setSubmitting(true);
+    await setDoc(doc(db, "rooms", room.id, "preferences", uid), {
+      wantFoods: wants,
+      dontWantFoods: donts,
+      submittedAt: Timestamp.now(),
     });
-    await updateDoc(doc(db, "rooms", room.id), updates);
-  };
-
-  const resetVotes = async () => {
-    const votesInit: Record<string, number> = {};
-    room.recommendations.forEach((f) => (votesInit[f] = 0));
     await updateDoc(doc(db, "rooms", room.id), {
-      votes: votesInit,
-      votedCount: 0,
+      submittedCount: increment(1),
+      recommendationReasons: {},
     });
+    setSubmitted(true);
+    setSubmitting(false);
   };
 
-  const finalizeVote = async () => {
-    const entries = Object.entries(room.votes);
-    if (!entries.length) return;
-    const winner = entries.reduce((a, b) => (a[1] >= b[1] ? a : b))[0];
-    await updateDoc(doc(db, "rooms", room.id), {
-      finalFood: winner,
-      decisionMethod: "vote",
-      status: "done",
-    });
-  };
+  const alreadySubmitted =
+    submitted || (room.submittedCount > 0 && wants.length === 0);
+  const remaining = Math.max(0, room.participantCount - room.submittedCount);
 
-  const pickRandom = async () => {
-    const foods = room.recommendations;
-    if (!foods.length) return;
-    const food = foods[Math.floor(Math.random() * foods.length)];
-    await updateDoc(doc(db, "rooms", room.id), {
-      finalFood: food,
-      decisionMethod: "random",
-      status: "done",
-    });
-  };
-
-  // 투표 완료 후 대기 화면
-  if (voteSubmitted && !allVoted) {
-    const remaining = room.participantCount - room.votedCount;
+  if (alreadySubmitted) {
     return (
       <PageWrapper>
-        <RoomTopBar onLeave={onLeave} isHost={isHost} />
-        <div className="flex flex-col items-center justify-center px-8 pt-16 pb-8">
-          <div
-            className="w-[120px] h-[120px] rounded-[36px] flex items-center justify-center text-[52px] mb-9"
-            style={{
-              background: "linear-gradient(135deg, #FF7A45 0%, #FFA07A 100%)",
-              boxShadow: "0 10px 28px rgba(255,122,69,0.30)",
-            }}
-          >
-            🗳️
-          </div>
-          <p className="text-[26px] font-black tracking-[-0.05em] text-[#202633] text-center mb-3">
-            투표 완료!
-          </p>
-          <p className="text-[16px] text-[#636E72] text-center leading-7 mb-8">
-            {remaining}명이 더 투표해야 해요
-            <br />
-            잠시만 기다려주세요!
-          </p>
-          <div className="w-full bg-white rounded-[20px] border border-[#DFE6E9] p-5 shadow-[0_4px_12px_rgba(0,0,0,0.04)]">
-            <div className="flex justify-between mb-3">
-              <span className="text-[13px] font-medium text-[#636E72]">투표 현황</span>
-              <span className="text-[15px] font-extrabold text-[#FF6B35]">
-                {room.votedCount} / {room.participantCount}명 완료
-              </span>
-            </div>
-            <div className="w-full bg-[#DFE6E9] rounded-full h-3 overflow-hidden mb-3">
-              <div
-                className="bg-gradient-to-r from-[#FF6B35] to-[#FF8C69] h-full rounded-full transition-all duration-500"
-                style={{
-                  width: `${room.participantCount > 0 ? (room.votedCount / room.participantCount) * 100 : 0}%`,
-                }}
-              />
-            </div>
-            <div className="flex justify-center gap-2">
-              {Array.from({ length: room.participantCount }).map((_, i) => (
-                <div
-                  key={i}
-                  className={`w-2.5 h-2.5 rounded-full transition-colors duration-300 ${
-                    i < room.votedCount ? "bg-[#FF6B35]" : "bg-[#DFE6E9]"
-                  }`}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
+        <CenterCard
+          title="기다리는 중"
+          desc={`지금 ${room.submittedCount}명이 골랐고 ${remaining}명이 더 골라야 해요`}
+        >
+          <Progress submitted={room.submittedCount} total={room.participantCount} />
+        </CenterCard>
       </PageWrapper>
     );
   }
 
   return (
     <PageWrapper>
-      <RoomTopBar onLeave={onLeave} isHost={isHost} />
-      <div
-        className="bg-gradient-to-br from-[#FF7A45] to-[#FFA07A] w-full text-white rounded-b-[28px] px-6 pt-5 pb-5"
-        style={{ boxShadow: "0 8px 24px rgba(255,107,53,0.22)" }}
+      <Card>
+        <p className="text-[22px] font-black text-[#202633]">음식 카테고리 선택</p>
+        {room.recommendationReasons.__systemMessage ? (
+          <div className="mt-4 rounded-[14px] bg-[#FFF4EF] px-4 py-3 text-[13px] font-semibold text-[#2D3436]">
+            {room.recommendationReasons.__systemMessage}
+          </div>
+        ) : null}
+      </Card>
+      <SelectSection
+        title="좋아하는 음식"
+        selected={wants}
+        onToggle={(food) => toggle(food, wants, setWants, donts, setDonts)}
+      />
+      <SelectSection
+        title="싫어하는 음식"
+        selected={donts}
+        onToggle={(food) => toggle(food, donts, setDonts, wants, setWants)}
+      />
+      <GradientButton
+        className="mt-4"
+        onClick={submit}
+        disabled={!wants.length || submitting}
       >
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-[10px] bg-white/20 flex items-center justify-center text-lg">
-            🍽️
-          </div>
-          <div>
-            <p className="text-[18px] font-extrabold text-white">AI 추천 Top 3 🎯</p>
-            <p className="text-[12px] text-white/80">마음에 드는 메뉴를 선택해 투표해주세요!</p>
-          </div>
-        </div>
-      </div>
+        {submitting ? "제출 중..." : "제출하기"}
+      </GradientButton>
+    </PageWrapper>
+  );
+}
 
-      <div className="px-5 pt-5 pb-6 space-y-3">
-        {room.recommendations.map((food, i) => {
-          const count = room.votes[food] ?? 0;
-          const voteRatio = totalVotes > 0 ? count / totalVotes : 0;
-          const isSelected = myVotes.has(food);
+function CategoryDoneView({ room, uid }: { room: Room; uid: string }) {
+  const isHost = room.hostId === uid;
+
+  const startRestaurant = async () => {
+    await updateDoc(doc(db, "rooms", room.id), {
+      status: "restaurant_inputting",
+      restaurantSubmittedCount: 0,
+      recommendations: [],
+      votes: {},
+      votedCount: 0,
+      finalFood: deleteField(),
+      decisionMethod: deleteField(),
+    });
+  };
+
+  return (
+    <PageWrapper>
+      <CenterCard title="선택된 카테고리" desc="">
+        <div className="rounded-[20px] bg-[linear-gradient(135deg,#FF7A45_0%,#FDB74A_100%)] px-6 py-8 text-center text-[34px] font-black text-white">
+          {room.selectedCategory ?? "?"}
+        </div>
+        {isHost ? (
+          <>
+            <p className="mt-5 text-center text-[18px] font-extrabold text-[#202633]">
+              음식점도 고르시겠어요?
+            </p>
+            <GradientButton className="mt-4" onClick={startRestaurant}>
+              네
+            </GradientButton>
+            <GradientButton href="/" className="mt-3">
+              홈으로 가기
+            </GradientButton>
+          </>
+        ) : (
+          <p className="mt-5 text-center text-[15px] leading-6 text-[#636E72]">
+            방장이 다음 단계를 선택하는 중이에요.
+            <br />
+            잠시만 기다려주세요.
+          </p>
+        )}
+      </CenterCard>
+    </PageWrapper>
+  );
+}
+
+function RestaurantInputView({ room, uid }: { room: Room; uid: string }) {
+  const [value, setValue] = useState("");
+  const [items, setItems] = useState<string[]>([]);
+  const [submitted, setSubmitted] = useState(false);
+
+  useEffect(() => {
+    if (
+      room.restaurantSubmittedCount >= room.participantCount &&
+      room.participantCount > 0 &&
+      room.status === "restaurant_inputting"
+    ) {
+      const finalize = async () => {
+        const snap = await getDocs(
+          collection(db, "rooms", room.id, "restaurantSuggestions"),
+        );
+        const set = new Set<string>();
+        snap.docs.forEach((d) => {
+          const data = d.data();
+          (data.restaurants ?? []).forEach((name: string) => {
+            const trimmed = name.trim();
+            if (trimmed) set.add(trimmed);
+          });
+        });
+        await updateDoc(doc(db, "rooms", room.id), {
+          status: "restaurant_voting",
+          recommendations: Array.from(set),
+          votes: Object.fromEntries(Array.from(set).map((v) => [v, 0])),
+          votedCount: 0,
+        });
+      };
+      void finalize();
+    }
+  }, [room]);
+
+  const add = () => {
+    const trimmed = value.trim();
+    if (!trimmed || items.includes(trimmed)) return;
+    setItems((prev) => [...prev, trimmed]);
+    setValue("");
+  };
+
+  const submit = async () => {
+    if (!items.length) return;
+    await setDoc(doc(db, "rooms", room.id, "restaurantSuggestions", uid), {
+      restaurants: items,
+      submittedAt: Timestamp.now(),
+    });
+    await updateDoc(doc(db, "rooms", room.id), {
+      restaurantSubmittedCount: increment(1),
+    });
+    setSubmitted(true);
+  };
+
+  if (submitted) {
+    return (
+      <PageWrapper>
+        <CenterCard
+          title="음식점 입력 대기 중"
+          desc={`지금 ${room.restaurantSubmittedCount}명이 입력했고 ${Math.max(
+            0,
+            room.participantCount - room.restaurantSubmittedCount,
+          )}명이 더 입력해야 해요`}
+        >
+          <Progress
+            submitted={room.restaurantSubmittedCount}
+            total={room.participantCount}
+          />
+        </CenterCard>
+      </PageWrapper>
+    );
+  }
+
+  return (
+    <PageWrapper>
+      <Card>
+        <p className="text-[22px] font-black text-[#202633]">
+          음식점 입력
+        </p>
+        <p className="mt-2 text-[14px] text-[#636E72]">
+          메뉴 카테고리: {room.selectedCategory ?? "-"}
+        </p>
+      </Card>
+      <Card className="mt-4">
+        <div className="flex gap-2">
+          <input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && add()}
+            placeholder="예: 교촌치킨 강남점"
+            className="flex-1 rounded-[14px] border border-[#DFE6E9] px-4 py-3 outline-none"
+          />
+          <button
+            onClick={add}
+            className="rounded-[14px] bg-[#FF7A45] px-4 py-3 font-bold text-white"
+          >
+            추가
+          </button>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {items.map((item) => (
+            <button
+              key={item}
+              onClick={() => setItems((prev) => prev.filter((v) => v !== item))}
+              className="rounded-full border border-[#DFE6E9] bg-white px-3 py-2 text-[13px] font-bold"
+            >
+              {item} ✕
+            </button>
+          ))}
+        </div>
+      </Card>
+      <GradientButton className="mt-4" onClick={submit} disabled={!items.length}>
+        제출하기
+      </GradientButton>
+    </PageWrapper>
+  );
+}
+
+function RestaurantVotingView({ room, uid }: { room: Room; uid: string }) {
+  const [selected, setSelected] = useState<string[]>([]);
+  const [submitted, setSubmitted] = useState(false);
+  const isHost = room.hostId === uid;
+
+  useEffect(() => {
+    if (
+      room.votedCount >= room.participantCount &&
+      room.participantCount > 0 &&
+      room.status === "restaurant_voting" &&
+      room.finalFood == null &&
+      isHost
+    ) {
+      const winner = Object.entries(room.votes).reduce((a, b) =>
+        a[1] >= b[1] ? a : b,
+      )[0];
+      void updateDoc(doc(db, "rooms", room.id), {
+        status: "done",
+        finalFood: winner,
+        decisionMethod: "vote",
+      });
+    }
+  }, [room, isHost]);
+
+  const submitVote = async () => {
+    if (!selected.length) return;
+    const updates: Record<string, unknown> = { votedCount: increment(1) };
+    selected.forEach((food) => {
+      updates[`votes.${food}`] = increment(1);
+    });
+    await updateDoc(doc(db, "rooms", room.id), updates);
+    setSubmitted(true);
+  };
+
+  const pickRandom = async () => {
+    const food =
+      room.recommendations[Math.floor(Math.random() * room.recommendations.length)];
+    await updateDoc(doc(db, "rooms", room.id), {
+      status: "done",
+      finalFood: food,
+      decisionMethod: "random",
+    });
+  };
+
+  if (submitted) {
+    return (
+      <PageWrapper>
+        <CenterCard
+          title="투표 대기 중"
+          desc={`지금 ${room.votedCount}명이 투표했고 ${Math.max(
+            0,
+            room.participantCount - room.votedCount,
+          )}명이 더 투표해야 해요`}
+        >
+          <Progress submitted={room.votedCount} total={room.participantCount} />
+        </CenterCard>
+      </PageWrapper>
+    );
+  }
+
+  return (
+    <PageWrapper>
+      <Card>
+        <p className="text-[22px] font-black text-[#202633]">음식점 투표</p>
+      </Card>
+      <div className="mt-4 space-y-3">
+        {room.recommendations.map((food) => {
+          const active = selected.includes(food);
           return (
             <button
               key={food}
-              onClick={() => toggleVote(food)}
-              disabled={voteSubmitted}
-              className={`w-full text-left bg-white rounded-[18px] border-2 p-4 transition ${
-                isSelected
-                  ? "border-[#FF6B35] shadow-[0_4px_14px_rgba(255,107,53,0.18)]"
-                  : "border-[#DFE6E9] hover:border-[#FF8C69]/50"
+              onClick={() =>
+                setSelected((prev) =>
+                  active ? prev.filter((v) => v !== food) : [...prev, food],
+                )
+              }
+              className={`w-full rounded-[18px] border-2 px-4 py-4 text-left font-bold ${
+                active
+                  ? "border-[#FF7A45] bg-[#FFF4EF]"
+                  : "border-[#DFE6E9] bg-white"
               }`}
-              style={{ backgroundColor: isSelected ? rankBg[i] : "white" }}
             >
-              <div className="flex items-center gap-3">
-                {/* 순위 뱃지 */}
-                <div
-                  className="w-11 h-11 rounded-[12px] flex items-center justify-center shrink-0 border"
-                  style={{
-                    backgroundColor: rankBg[i],
-                    borderColor: `${rankColor[i]}66`,
-                  }}
-                >
-                  <span
-                    className="text-[22px] font-black"
-                    style={{ color: rankColor[i] }}
-                  >
-                    {medals[i]}
-                  </span>
-                </div>
-                {/* 음식명 + 이유 */}
-                <div className="flex-1 min-w-0">
-                  <p className="text-[19px] font-extrabold text-[#2D3436] truncate">
-                    {food}
-                  </p>
-                  {room.recommendationReasons[food] && (
-                    <p className="text-[12px] text-[#636E72] mt-0.5 truncate leading-5">
-                      {room.recommendationReasons[food]}
-                    </p>
-                  )}
-                </div>
-                {/* 체크박스 (회색 → 초록) */}
-                {!voteSubmitted ? (
-                  <div
-                    className="w-7 h-7 rounded-[6px] flex items-center justify-center shrink-0 border-2 transition-all duration-200"
-                    style={{
-                      backgroundColor: isSelected ? "#00B894" : "transparent",
-                      borderColor: isSelected ? "#00B894" : "#9E9E9E",
-                    }}
-                  >
-                    {isSelected && (
-                      <span className="text-white text-[15px] font-bold leading-none">✓</span>
-                    )}
-                  </div>
-                ) : isSelected ? (
-                  <div
-                    className="w-7 h-7 rounded-[6px] flex items-center justify-center shrink-0 border-2"
-                    style={{ backgroundColor: "#00B894", borderColor: "#00B894" }}
-                  >
-                    <span className="text-white text-[15px] font-bold leading-none">✓</span>
-                  </div>
-                ) : null}
-              </div>
-              {/* 투표 결과 (모두 완료 시에만) */}
-              {allVoted && (
-                <div className="mt-3 flex items-center gap-2">
-                  <div className="flex-1 h-1.5 bg-[#DFE6E9] rounded-full overflow-hidden">
-                    <div
-                      className="h-full rounded-full transition-all duration-500"
-                      style={{
-                        width: `${voteRatio * 100}%`,
-                        backgroundColor: rankColor[i],
-                      }}
-                    />
-                  </div>
-                  <span
-                    className="text-[13px] font-bold shrink-0"
-                    style={{ color: rankColor[i] }}
-                  >
-                    {count}표
-                  </span>
-                </div>
-              )}
+              {food}
             </button>
           );
         })}
-
-        {/* 하단 버튼 영역 */}
-        <div className="space-y-2 pt-1">
-          {/* 투표 완료 버튼 (미제출 시 모두에게) */}
-          {!voteSubmitted ? (
-            <button
-              onClick={submitVotes}
-              disabled={myVotes.size === 0}
-              className={`w-full h-14 rounded-[16px] font-extrabold text-[16px] transition ${
-                myVotes.size > 0
-                  ? "bg-gradient-to-r from-[#FF7A45] to-[#FFA07A] text-white hover:opacity-90"
-                  : "bg-[#DFE6E9] text-[#636E72] cursor-not-allowed"
-              }`}
-              style={
-                myVotes.size > 0
-                  ? { boxShadow: "0 6px 14px rgba(255,107,53,0.30)" }
-                  : undefined
-              }
-            >
-              {myVotes.size > 0
-                ? `투표 완료 (${myVotes.size}개 선택됨)`
-                : "메뉴를 선택해주세요"}
-            </button>
-          ) : !isHost ? (
-            /* 비방장: 대기 메시지 */
-            <div
-              className={`flex items-center justify-center gap-2 rounded-[14px] border px-5 py-3.5 ${
-                allVoted
-                  ? "bg-[#00B894]/[0.08] border-[#00B894]/20"
-                  : "bg-[#FF8C69]/[0.08] border-[#FF8C69]/15"
-              }`}
-            >
-              {!allVoted && <Spinner small />}
-              <span
-                className={`text-[14px] font-semibold ${
-                  allVoted ? "text-[#00B894]" : "text-[#FF8C69]"
-                }`}
-              >
-                {allVoted
-                  ? "✅ 모두 투표 완료! 방장이 결과를 확정할 거에요"
-                  : `투표 완료! ${room.votedCount}/${room.participantCount}명 완료 중...`}
-              </span>
-            </div>
-          ) : null}
-
-          {/* 방장 전용 섹션 */}
-          {isHost && voteSubmitted && (
-            <div className="space-y-2">
-              {/* 투표 현황 */}
-              <div className="flex items-center justify-center gap-2 bg-[#FF6B35]/[0.08] rounded-[12px] px-4 py-2.5">
-                <span className="text-[13px] font-bold text-[#FF6B35]">
-                  🗳️ {allVoted ? "모두 투표 완료! 결과를 확정해주세요" : `${room.votedCount} / ${room.participantCount}명 투표 완료`}
-                </span>
-              </div>
-              {/* 결과 확정 버튼 (allVoted 시) */}
-              {allVoted && (
-                <div className="flex gap-2">
-                  <button
-                    onClick={finalizeVote}
-                    className="flex-1 h-14 rounded-[16px] bg-gradient-to-r from-[#FF7A45] to-[#FFA07A] text-white font-extrabold text-[15px] transition hover:opacity-90"
-                    style={{ boxShadow: "0 6px 14px rgba(255,107,53,0.30)" }}
-                  >
-                    ✅ 투표 결과 확정
-                  </button>
-                  <button
-                    onClick={pickRandom}
-                    className="flex-1 h-14 rounded-[16px] bg-[#FDB74A] text-white font-extrabold text-[15px] transition hover:opacity-90"
-                    style={{ boxShadow: "0 6px 14px rgba(253,183,74,0.30)" }}
-                  >
-                    🎲 랜덤 뽑기
-                  </button>
-                </div>
-              )}
-              {/* 재투표 버튼 */}
-              <button
-                onClick={resetVotes}
-                className="w-full h-11 rounded-[14px] border border-[#DFE6E9] bg-white text-[#636E72] font-bold text-[14px] transition hover:border-[#FF8C69]/40 hover:text-[#FF7A45]"
-              >
-                🔄 재투표
-              </button>
-            </div>
-          )}
-        </div>
       </div>
+      <GradientButton className="mt-4" onClick={submitVote} disabled={!selected.length}>
+        투표 제출
+      </GradientButton>
+      {isHost ? (
+        <button
+          onClick={pickRandom}
+          className="mt-3 h-14 w-full rounded-[18px] border border-[#DFE6E9] bg-white font-extrabold text-[#202633]"
+        >
+          랜덤으로 선택하기
+        </button>
+      ) : null}
     </PageWrapper>
   );
 }
 
-/* ─────────────────── DoneView ─────────────────── */
-function DoneView({
-  room,
-  onLeave,
-  isHost,
-}: {
-  room: Room;
-  onLeave: () => void;
-  isHost: boolean;
-}) {
-  const method =
-    room.decisionMethod === "vote" ? "🗳️ 투표로 결정!" : "🎲 랜덤으로 결정!";
+function RestaurantRevoteView({ room, uid }: { room: Room; uid: string }) {
+  const isHost = room.hostId === uid;
+  const [selected, setSelected] = useState<string[]>(room.recommendations);
+
+  if (!isHost) {
+    return (
+      <PageWrapper>
+        <CenterCard title="재투표 준비 중" desc="방장이 다시 투표할 음식점을 고르고 있어요" />
+      </PageWrapper>
+    );
+  }
+
+  const confirm = async () => {
+    if (selected.length < 2) return;
+    await updateDoc(doc(db, "rooms", room.id), {
+      status: "restaurant_voting",
+      recommendations: selected,
+      votes: Object.fromEntries(selected.map((v) => [v, 0])),
+      votedCount: 0,
+      finalFood: deleteField(),
+      decisionMethod: deleteField(),
+    });
+  };
+
   return (
     <PageWrapper>
-      <RoomTopBar onLeave={onLeave} isHost={isHost} />
-      <div
-        className="bg-gradient-to-br from-[#FF6B35] to-[#FDB74A] w-full text-white rounded-b-[32px] px-6 pt-8 pb-8 text-center"
-        style={{ boxShadow: "0 8px 24px rgba(255,107,53,0.25)" }}
-      >
-        <h1 className="text-[28px] font-black tracking-[-0.5px]">
-          오늘의 메뉴 결정!
-        </h1>
+      <Card>
+        <p className="text-[22px] font-black text-[#202633]">재투표 후보 선택</p>
+      </Card>
+      <div className="mt-4 space-y-3">
+        {room.recommendations.map((food) => {
+          const active = selected.includes(food);
+          return (
+            <button
+              key={food}
+              onClick={() =>
+                setSelected((prev) =>
+                  active ? prev.filter((v) => v !== food) : [...prev, food],
+                )
+              }
+              className={`w-full rounded-[18px] border-2 px-4 py-4 text-left font-bold ${
+                active
+                  ? "border-[#FF7A45] bg-[#FFF4EF]"
+                  : "border-[#DFE6E9] bg-white"
+              }`}
+            >
+              {food}
+            </button>
+          );
+        })}
       </div>
-      <div className="px-7 pt-10 pb-8 flex flex-col items-center text-center space-y-5">
-        <div className="text-[72px]">🎉</div>
-        <p className="text-[17px] text-[#636E72]">오늘의 메뉴는...</p>
-        <div
-          className="w-full bg-gradient-to-br from-[#FF6B35] to-[#FDB74A] rounded-[20px] px-8 py-7"
-          style={{ boxShadow: "0 8px 24px rgba(255,107,53,0.30)" }}
-        >
-          <p className="text-[40px] font-black text-white">
-            {room.finalFood ?? "?"}
-          </p>
-        </div>
-        <p className="text-[#636E72] text-[15px]">{method}</p>
-        <div className="w-full pt-2">
-          <GradientButton href="/">처음으로 돌아가기</GradientButton>
-        </div>
-      </div>
+      <GradientButton className="mt-4" onClick={confirm} disabled={selected.length < 2}>
+        선택한 음식점으로 재투표
+      </GradientButton>
     </PageWrapper>
   );
 }
 
-/* ─────────────────── 공용 컴포넌트 ─────────────────── */
+function DoneView({ room, uid }: { room: Room; uid: string }) {
+  const isHost = room.hostId === uid;
+
+  const revote = async () => {
+    await updateDoc(doc(db, "rooms", room.id), {
+      status: "restaurant_revote_select",
+      finalFood: deleteField(),
+      decisionMethod: deleteField(),
+    });
+  };
+
+  return (
+    <PageWrapper>
+      <CenterCard title="최종 음식점 결과" desc="">
+        <div className="rounded-[20px] bg-[linear-gradient(135deg,#FF7A45_0%,#FDB74A_100%)] px-6 py-8 text-center text-[32px] font-black text-white">
+          {room.finalFood ?? "?"}
+        </div>
+        <GradientButton href="/" className="mt-4">
+          홈으로 가기
+        </GradientButton>
+        {room.decisionMethod === "vote" && isHost ? (
+          <button
+            onClick={revote}
+            className="mt-3 h-14 w-full rounded-[18px] border border-[#DFE6E9] bg-white font-extrabold text-[#202633]"
+          >
+            재투표하기
+          </button>
+        ) : null}
+      </CenterCard>
+    </PageWrapper>
+  );
+}
+
+function SelectSection({
+  title,
+  selected,
+  onToggle,
+}: {
+  title: string;
+  selected: string[];
+  onToggle: (food: string) => void;
+}) {
+  return (
+    <Card className="mt-4">
+      <p className="text-[16px] font-black text-[#202633]">{title}</p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {FOOD_CATEGORIES.map((food) => {
+          const active = selected.includes(food);
+          return (
+            <button
+              key={food}
+              onClick={() => onToggle(food)}
+              className={`rounded-full border px-3 py-2 text-[13px] font-bold ${
+                active
+                  ? "border-[#FF7A45] bg-[#FF7A45] text-white"
+                  : "border-[#DFE6E9] bg-white text-[#202633]"
+              }`}
+            >
+              {food}
+            </button>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
 function PageWrapper({ children }: { children: React.ReactNode }) {
   return (
     <div className="relative min-h-screen overflow-hidden bg-[var(--bg)]">
-      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-        <div className="absolute left-1/2 top-[-180px] h-[420px] w-[720px] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,_rgba(255,148,99,0.34)_0%,_rgba(255,148,99,0)_70%)]" />
-        <div className="absolute left-[-110px] top-[26%] h-[320px] w-[320px] rounded-full bg-[radial-gradient(circle,_rgba(255,186,120,0.24)_0%,_rgba(255,186,120,0)_72%)]" />
-        <div className="absolute right-[-120px] top-[18%] h-[280px] w-[280px] rounded-full bg-[radial-gradient(circle,_rgba(94,109,142,0.18)_0%,_rgba(94,109,142,0)_72%)]" />
-      </div>
-      <div className="mx-auto w-full max-w-[440px] min-h-screen px-5 py-5 sm:py-8">
-        {children}
-      </div>
+      <div className="mx-auto w-full max-w-[440px] px-5 py-5 sm:py-8">{children}</div>
     </div>
   );
 }
 
-function GradientHeader({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      className="relative overflow-hidden rounded-[34px] border border-white/70 bg-[linear-gradient(145deg,#FF7A45_0%,#FF9A62_52%,#FFB07A_100%)] px-7 pb-12 pt-8 text-center text-white"
-      style={{ boxShadow: "0 24px 60px rgba(255,122,69,0.24)" }}
-    >
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.22),transparent_40%)]" />
-      <div className="absolute right-[-32px] top-[-28px] h-28 w-28 rounded-full border border-white/20 bg-[#ffd2ba]/20 blur-2xl" />
-      <div className="relative">{children}</div>
-    </div>
-  );
-}
-
-function HeaderIcon() {
-  return (
-    <div className="relative mx-auto mb-5 flex h-[118px] w-[118px] items-center justify-center">
-      <div className="absolute inset-0 rounded-[30px] bg-[#ff9b68]/30 blur-2xl" />
-      <div className="relative flex h-[118px] w-[118px] items-center justify-center rounded-[32px] border border-white/20 bg-white/12 backdrop-blur-md">
-        <Image
-          src="/brand-icon.png"
-          alt="뭐 먹을건데 아이콘"
-          width={84}
-          height={84}
-          className="h-[84px] w-[84px] object-contain"
-          priority
-        />
-      </div>
-    </div>
-  );
-}
-
-function HeaderTitle({ children }: { children: React.ReactNode }) {
-  return (
-    <h1 className="text-[34px] font-black tracking-[-0.06em] leading-[1.05] text-white">
-      {children}
-    </h1>
-  );
-}
-
-function HeaderDesc({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="mt-3 text-[14px] leading-6 text-white/[0.8]">
-      {children}
-    </p>
-  );
-}
-
-function RoomTopBar({
-  onLeave,
-  isHost,
+function Card({
+  children,
+  className,
 }: {
-  onLeave: () => void;
-  isHost: boolean;
+  children: React.ReactNode;
+  className?: string;
 }) {
+  return (
+    <div className={`rounded-[24px] border border-[#DFE6E9] bg-white p-5 shadow-[0_8px_22px_rgba(32,38,51,0.06)] ${className ?? ""}`}>
+      {children}
+    </div>
+  );
+}
+
+function CenterCard({
+  title,
+  desc,
+  children,
+}: {
+  title: string;
+  desc: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="flex min-h-[calc(100vh-40px)] items-center">
+      <Card className="w-full">
+        <p className="text-center text-[28px] font-black text-[#202633]">{title}</p>
+        {desc ? <p className="mt-3 text-center text-[14px] leading-6 text-[#636E72]">{desc}</p> : null}
+        <div className="mt-6">{children}</div>
+      </Card>
+    </div>
+  );
+}
+
+function TopBar({ onLeave }: { onLeave: () => void }) {
   return (
     <div className="mb-4 flex justify-end">
       <button
         type="button"
         onClick={onLeave}
-        className="rounded-full border border-[#eadfd7] bg-white/90 px-4 py-2 text-[13px] font-semibold text-[#6f7785] shadow-[0_8px_20px_rgba(32,38,51,0.07)] transition hover:border-[#ffb08e] hover:text-[#ff7a45]"
+        className="rounded-full border border-[#eadfd7] bg-white/90 px-4 py-2 text-[13px] font-semibold text-[#6f7785]"
       >
-        {isHost ? "방 종료하고 나가기" : "방 나가기"}
+        방 나가기
       </button>
+    </div>
+  );
+}
+
+function Progress({ submitted, total }: { submitted: number; total: number }) {
+  const percent = total > 0 ? (submitted / total) * 100 : 0;
+  return (
+    <div>
+      <div className="h-3 w-full overflow-hidden rounded-full bg-[#DFE6E9]">
+        <div
+          className="h-full rounded-full bg-[linear-gradient(135deg,#FF7A45_0%,#FDB74A_100%)]"
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      <p className="mt-3 text-center text-[13px] font-bold text-[#FF7A45]">
+        {submitted} / {total}명 완료
+      </p>
     </div>
   );
 }
@@ -1260,57 +988,26 @@ function GradientButton({
   href?: string;
   className?: string;
 }) {
-  const cls = `flex items-center justify-center gap-2 w-full h-14 rounded-[18px] font-extrabold text-[17px] transition ${className ?? ""}`;
-
+  const cls = `flex h-14 w-full items-center justify-center rounded-[18px] text-[17px] font-extrabold ${
+    disabled ? "cursor-not-allowed bg-[#DFE6E9] text-[#636E72]" : "bg-[linear-gradient(135deg,#ff7a45_0%,#ff9a62_100%)] text-white"
+  } ${className ?? ""}`;
   if (href) {
-    return (
-      <a
-        href={href}
-        className={`${cls} bg-[linear-gradient(135deg,#ff7a45_0%,#ff9a62_100%)] text-white hover:opacity-90 active:opacity-80`}
-        style={{ boxShadow: "0 6px 14px rgba(255,107,53,0.35)" }}
-      >
-        {children}
-      </a>
-    );
+    return <a href={href} className={cls}>{children}</a>;
   }
-
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={`${cls} ${
-        disabled
-          ? "cursor-not-allowed bg-[#DFE6E9] text-[#636E72]"
-          : "bg-[linear-gradient(135deg,#ff7a45_0%,#ff9a62_100%)] text-white hover:opacity-90 active:opacity-80"
-      }`}
-      style={
-        disabled ? undefined : { boxShadow: "0 6px 14px rgba(255,107,53,0.35)" }
-      }
-    >
+    <button type="button" onClick={onClick} disabled={disabled} className={cls}>
       {children}
     </button>
   );
 }
 
-function Spinner({ small }: { small?: boolean }) {
-  return (
-    <div
-      className={`${small ? "w-[18px] h-[18px] border-2" : "w-8 h-8 border-[3px]"} border-[#FF6B35] border-t-transparent rounded-full animate-spin shrink-0`}
-    />
-  );
+function Spinner() {
+  return <div className="mx-auto h-8 w-8 animate-spin rounded-full border-[3px] border-[#FF7A45]/30 border-t-[#FF7A45]" />;
 }
 
-/* ─────────────────── 엔트리 ─────────────────── */
 export default function JoinPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="min-h-screen bg-[#FFF9F5] flex items-center justify-center">
-          <div className="w-8 h-8 border-[3px] border-[#FF6B35] border-t-transparent rounded-full animate-spin" />
-        </div>
-      }
-    >
+    <Suspense fallback={<LoadingView />}>
       <JoinContent />
     </Suspense>
   );

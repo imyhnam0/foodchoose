@@ -100,6 +100,20 @@ class _RoomLobbyScreenState extends State<RoomLobbyScreen> {
           });
         }
 
+        if (room.status == 'category_done' || room.status == 'done') {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            context.go('/final/${room.id}');
+          });
+        }
+
+        if (room.status == 'restaurant_inputting' ||
+            room.status == 'restaurant_voting' ||
+            room.status == 'restaurant_revote_select') {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            context.go('/results/${room.id}');
+          });
+        }
+
         return Scaffold(
           backgroundColor: AppColors.background,
           body: SafeArea(
@@ -306,7 +320,6 @@ class _RoomLobbyScreenState extends State<RoomLobbyScreen> {
         const SizedBox(height: 16),
         _buildParticipantList(room),
         if (room.participantCount < 2) ...[
-
           const SizedBox(height: 16),
           Container(
             padding: const EdgeInsets.all(14),
@@ -315,7 +328,6 @@ class _RoomLobbyScreenState extends State<RoomLobbyScreen> {
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: AppColors.amber.withOpacity(0.3)),
             ),
-            
           ),
         ],
       ],
@@ -351,7 +363,9 @@ class _RoomLobbyScreenState extends State<RoomLobbyScreen> {
                 : AppColors.surface,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: isMe ? AppColors.primary.withOpacity(0.4) : AppColors.border,
+              color: isMe
+                  ? AppColors.primary.withOpacity(0.4)
+                  : AppColors.border,
               width: 1.5,
             ),
           ),
@@ -386,7 +400,10 @@ class _RoomLobbyScreenState extends State<RoomLobbyScreen> {
               ),
               if (isHost)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
                   decoration: BoxDecoration(
                     color: AppColors.secondary.withOpacity(0.12),
                     borderRadius: BorderRadius.circular(20),
@@ -402,7 +419,10 @@ class _RoomLobbyScreenState extends State<RoomLobbyScreen> {
                 ),
               if (isMe && !isHost)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
                   decoration: BoxDecoration(
                     color: AppColors.primary.withOpacity(0.12),
                     borderRadius: BorderRadius.circular(20),

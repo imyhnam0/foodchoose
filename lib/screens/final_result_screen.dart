@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../models/room.dart';
+import '../services/auth_service.dart';
 import '../services/room_service.dart';
 import '../utils/app_colors.dart';
 
@@ -18,6 +19,8 @@ class _FinalResultScreenState extends State<FinalResultScreen>
   late AnimationController _controller;
   late Animation<double> _scaleAnim;
   late Animation<double> _fadeAnim;
+  final _roomService = RoomService();
+  final _authService = AuthService();
 
   @override
   void initState() {
@@ -26,14 +29,8 @@ class _FinalResultScreenState extends State<FinalResultScreen>
       vsync: this,
       duration: const Duration(milliseconds: 700),
     );
-    _scaleAnim = CurvedAnimation(
-      parent: _controller,
-      curve: Curves.elasticOut,
-    );
-    _fadeAnim = CurvedAnimation(
-      parent: _controller,
-      curve: Curves.easeIn,
-    );
+    _scaleAnim = CurvedAnimation(parent: _controller, curve: Curves.elasticOut);
+    _fadeAnim = CurvedAnimation(parent: _controller, curve: Curves.easeIn);
     _controller.forward();
   }
 
@@ -45,18 +42,20 @@ class _FinalResultScreenState extends State<FinalResultScreen>
 
   @override
   Widget build(BuildContext context) {
-    final roomService = RoomService();
-
     return StreamBuilder<Room>(
-      stream: roomService.roomStream(widget.roomId),
+      stream: _roomService.roomStream(widget.roomId),
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return const Scaffold(
-              body: Center(
-                  child: CircularProgressIndicator(color: AppColors.primary)));
+            body: Center(
+              child: CircularProgressIndicator(color: AppColors.primary),
+            ),
+          );
         }
+
         final room = snapshot.data!;
-        final isVote = room.decisionMethod == 'vote';
+        final isCategoryStage = room.status == 'category_done';
+        final isHost = room.hostId == _authService.userId;
 
         return Scaffold(
           backgroundColor: AppColors.background,
@@ -67,23 +66,19 @@ class _FinalResultScreenState extends State<FinalResultScreen>
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   const Spacer(),
-
-                  // 상단 축제 이모지
-                  FadeTransition(
-                    opacity: _fadeAnim,
-                    child: const Text(
-                      '🎉🎊🎉',
-                      style: TextStyle(fontSize: 48),
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-
-                  // 서브타이틀
                   FadeTransition(
                     opacity: _fadeAnim,
                     child: Text(
-                      isVote ? '투표 결과로 결정됐어요!' : '🎲 랜덤으로 뽑혔어요!',
-                      style: TextStyle(
+                      isCategoryStage ? '🍽️' : '🎉🎊🎉',
+                      style: const TextStyle(fontSize: 48),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  FadeTransition(
+                    opacity: _fadeAnim,
+                    child: Text(
+                      isCategoryStage ? '오늘의 메뉴 카테고리' : '최종 음식점 결과',
+                      style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
                         color: AppColors.muted,
@@ -93,146 +88,125 @@ class _FinalResultScreenState extends State<FinalResultScreen>
                   const SizedBox(height: 8),
                   FadeTransition(
                     opacity: _fadeAnim,
-                    child: const Text(
-                      '오늘의 메뉴는...',
-                      style: TextStyle(
+                    child: Text(
+                      isCategoryStage ? '선택된 카테고리는...' : '최종 선택된 음식점은...',
+                      style: const TextStyle(
                         fontSize: 22,
                         fontWeight: FontWeight.w700,
                         color: AppColors.text,
                       ),
                     ),
                   ),
-
                   const SizedBox(height: 28),
-
-                  // 메인 음식 카드 (스케일 애니메이션)
                   ScaleTransition(
                     scale: _scaleAnim,
                     child: Container(
                       width: double.infinity,
                       padding: const EdgeInsets.symmetric(
-                          vertical: 32, horizontal: 28),
+                        vertical: 32,
+                        horizontal: 28,
+                      ),
                       decoration: BoxDecoration(
                         gradient: AppColors.goldGradient,
                         borderRadius: BorderRadius.circular(28),
-                        boxShadow: [
-                          BoxShadow(
-                            color: AppColors.primary.withOpacity(0.4),
-                            blurRadius: 28,
-                            offset: const Offset(0, 12),
-                          ),
-                        ],
                       ),
                       child: Column(
                         children: [
-                          const Text('🍽️', style: TextStyle(fontSize: 48)),
-                          const SizedBox(height: 14),
+                          const SizedBox(height: 8),
                           Text(
-                            room.finalFood ?? '?',
+                            isCategoryStage
+                                ? (room.selectedCategory ?? '?')
+                                : (room.finalFood ?? '?'),
                             textAlign: TextAlign.center,
                             style: const TextStyle(
-                              fontSize: 44,
+                              fontSize: 40,
                               fontWeight: FontWeight.w900,
                               color: Colors.white,
-                              letterSpacing: -0.5,
-                              shadows: [
-                                Shadow(
-                                  color: Colors.black26,
-                                  blurRadius: 6,
-                                  offset: Offset(0, 3),
-                                ),
-                              ],
                             ),
                           ),
                         ],
                       ),
                     ),
                   ),
-
                   const SizedBox(height: 24),
-
-                  // 결정 방식 배지
-                  FadeTransition(
-                    opacity: _fadeAnim,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: isVote
-                            ? AppColors.secondaryMuted
-                            : AppColors.primaryMuted,
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: isVote
-                              ? AppColors.secondary.withOpacity(0.2)
-                              : AppColors.primary.withOpacity(0.2),
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(isVote ? '🗳️' : '🎲',
-                              style: const TextStyle(fontSize: 14)),
-                          const SizedBox(width: 6),
-                          Text(
-                            isVote ? '다수결 투표로 결정' : '랜덤 뽑기로 결정',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: isVote
-                                  ? AppColors.secondary
-                                  : AppColors.primary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
+                  if (isCategoryStage)
+                    _buildCategoryActions(room)
+                  else
+                    _buildFinalActions(room, isHost),
                   const Spacer(),
-
-                  // 처음으로 버튼
-                  SizedBox(
-                    width: double.infinity,
-                    height: 56,
-                    child: Material(
-                      borderRadius: BorderRadius.circular(16),
-                      color: Colors.transparent,
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(16),
-                        onTap: () => context.go('/'),
-                        child: Ink(
-                          decoration: BoxDecoration(
-                            gradient: AppColors.headerGradient,
-                            borderRadius: BorderRadius.circular(16),
-                            boxShadow: [
-                              BoxShadow(
-                                color: AppColors.primary.withOpacity(0.3),
-                                blurRadius: 14,
-                                offset: const Offset(0, 6),
-                              ),
-                            ],
-                          ),
-                          child: const Center(
-                            child: Text(
-                              '🏠 처음으로 돌아가기',
-                              style: TextStyle(
-                                fontSize: 17,
-                                fontWeight: FontWeight.w800,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
                 ],
               ),
             ),
           ),
         );
       },
+    );
+  }
+
+  Widget _buildCategoryActions(Room room) {
+    return Column(
+      children: [
+        const Text(
+          '음식점도 고르시겠어요?',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w800,
+            color: AppColors.text,
+          ),
+        ),
+        const SizedBox(height: 14),
+        SizedBox(
+          width: double.infinity,
+          height: 54,
+          child: FilledButton(
+            onPressed: () async {
+              await _roomService.startRestaurantInput(room.id);
+              if (!mounted) return;
+              context.go('/results/${room.id}');
+            },
+            child: const Text('네'),
+          ),
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: OutlinedButton(
+            onPressed: () => context.go('/'),
+            child: const Text('아니요, 홈으로 갈게요'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildFinalActions(Room room, bool isHost) {
+    return Column(
+      children: [
+        SizedBox(
+          width: double.infinity,
+          height: 54,
+          child: FilledButton(
+            onPressed: () => context.go('/'),
+            child: const Text('홈으로 가기'),
+          ),
+        ),
+        if (room.decisionMethod == 'vote' && isHost) ...[
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            height: 52,
+            child: OutlinedButton(
+              onPressed: () async {
+                await _roomService.startRestaurantRevoteSelection(room.id);
+                if (!mounted) return;
+                context.go('/results/${room.id}');
+              },
+              child: const Text('재투표하기'),
+            ),
+          ),
+        ],
+      ],
     );
   }
 }

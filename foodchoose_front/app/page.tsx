@@ -28,9 +28,9 @@ export default function Home() {
                   뭐 먹을건데
                 </h1>
                 <p className="mt-3 text-[14px] leading-6 text-white/80">
-                  취향은 다 달라도
+                  정해진 카테고리에서 고르고
                   <br />
-                  오늘 메뉴는 깔끔하게 정해주는 같이 고르는 푸드 룸.
+                  오늘 메뉴 하나를 정하는 푸드 룸.
                 </p>
               </div>
               <div className="relative shrink-0">
@@ -58,12 +58,12 @@ export default function Home() {
               <FeatureTile
                 emoji="❤️"
                 title="먹고 싶은 음식"
-                desc="먹고 싶은 메뉴를 자유롭게 적어요."
+                desc="정해진 카테고리 중 원하는 메뉴를 골라요."
               />
               <FeatureTile
                 emoji="🙅"
                 title="먹기 싫은 음식"
-                desc="피하고 싶은 메뉴도 같이 반영해요."
+                desc="빼고 싶은 카테고리도 같이 반영해요."
               />
             </div>
           </section>

@@ -1,9 +1,11 @@
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import '../services/auth_service.dart';
 import '../services/room_service.dart';
 import '../utils/app_colors.dart';
+import '../utils/food_categories.dart';
 
 class HomeScreen extends StatefulWidget {
   final String? initialCode;
@@ -254,6 +256,98 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Future<void> _pickRandomCategory() async {
+    final randomFood =
+        kFoodCategories[Random().nextInt(kFoodCategories.length)];
+    await showDialog<void>(
+      context: context,
+      barrierColor: const Color(0xFF202633).withOpacity(0.45),
+      builder: (dialogContext) {
+        return Dialog(
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 24,
+            vertical: 24,
+          ),
+          backgroundColor: Colors.transparent,
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(30),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF202633).withOpacity(0.18),
+                  blurRadius: 36,
+                  offset: const Offset(0, 16),
+                ),
+              ],
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 28, 24, 22),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('🎲', style: TextStyle(fontSize: 46)),
+                  const SizedBox(height: 14),
+                  const Text(
+                    '랜덤으로 골라봤어요',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF202633),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 22,
+                    ),
+                    decoration: BoxDecoration(
+                      gradient: AppColors.headerGradient,
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                    child: Text(
+                      randomFood,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 34,
+                        fontWeight: FontWeight.w900,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 54,
+                    child: FilledButton(
+                      onPressed: () => Navigator.of(dialogContext).pop(),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFFF8F5F2),
+                        foregroundColor: const Color(0xFF202633),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                      ),
+                      child: const Text(
+                        '닫기',
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -268,7 +362,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 padding: const EdgeInsets.fromLTRB(20, 18, 20, 32),
                 child: Column(
                   children: [
-                    
                     const SizedBox(height: 18),
                     _buildActionSection(),
 
@@ -360,7 +453,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   borderRadius: BorderRadius.circular(18),
                 ),
                 child: const Text(
-                  'AI PICK',
+                  'TOP1 PICK',
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w800,
@@ -391,6 +484,27 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            height: 56,
+            child: OutlinedButton.icon(
+              onPressed: _loading ? null : _pickRandomCategory,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF202633),
+                backgroundColor: Colors.white,
+                side: const BorderSide(color: Color(0xFFFFD8C8)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+              ),
+              icon: const Icon(Icons.casino_rounded, size: 22),
+              label: const Text(
+                '랜덤으로 음식 정하기',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+              ),
             ),
           ),
           const SizedBox(height: 24),
@@ -442,8 +556,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
- 
-
   Widget _buildHeader() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
@@ -479,54 +591,32 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
             ),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Row(
-                  children: [
-                    const Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '뭐 먹을건데',
-                            style: TextStyle(
-                              fontSize: 34,
-                              height: 1.05,
-                              fontWeight: FontWeight.w900,
-                              color: Colors.white,
-                            ),
-                          ),
-                          SizedBox(height: 10),
-                          Text(
-                            'AI가 모두의 먹고 싶은 것과 먹기 싫은 것을 분석해 최적의 메뉴를 추천해요.',
-                            style: TextStyle(
-                              fontSize: 14,
-                              height: 1.6,
-                              color: Color(0xD9FFFFFF),
-                            ),
-                          ),
-                        ],
-                      ),
+                Expanded(
+                  child: Text(
+                    '뭐 먹을건데',
+                    style: TextStyle(
+                      fontSize: 40,
+                      height: 1.08,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: -0.8,
+                      color: Colors.white,
                     ),
-                    const SizedBox(width: 12),
-                    Container(
-                      width: 116,
-                      height: 116,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.12),
-                        borderRadius: BorderRadius.circular(30),
-                        border: Border.all(
-                          color: Colors.white.withOpacity(0.20),
-                        ),
-                      ),
-                      padding: const EdgeInsets.all(14),
-                      child: Image.asset(
-                        'assets/icon.png',
-                        fit: BoxFit.contain,
-                      ),
-                    ),
-                  ],
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Container(
+                  width: 100,
+                  height: 100,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(color: Colors.white.withOpacity(0.20)),
+                  ),
+                  padding: const EdgeInsets.all(12),
+                  child: Image.asset('assets/icon.png', fit: BoxFit.contain),
                 ),
               ],
             ),

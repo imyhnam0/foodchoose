@@ -26,6 +26,7 @@ class RoomService {
       createdAt: DateTime.now(),
       participantCount: 1,
       submittedCount: 0,
+      restaurantSubmittedCount: 0,
       recommendations: [],
       recommendationReasons: {},
       votes: {},
@@ -119,6 +120,158 @@ class RoomService {
     });
   }
 
+  Future<void> saveWeightedResult(
+    String roomId,
+    String food,
+    String summary,
+  ) async {
+    await _rooms.doc(roomId).update({
+      'status': 'category_done',
+      'selectedCategory': food,
+      'recommendations': [],
+      'recommendationReasons': {'categorySummary': summary},
+      'restaurantSubmittedCount': 0,
+      'votes': {},
+      'votedCount': 0,
+      'decisionMethod': 'weighted',
+      'finalFood': FieldValue.delete(),
+    });
+  }
+
+  Future<void> restartPreferenceRound(String roomId, String message) async {
+    final prefs = await _rooms.doc(roomId).collection('preferences').get();
+    final batch = _db.batch();
+
+    for (final pref in prefs.docs) {
+      batch.delete(pref.reference);
+    }
+
+    batch.update(_rooms.doc(roomId), {
+      'status': 'inputting',
+      'submittedCount': 0,
+      'recommendations': <String>[],
+      'recommendationReasons': {'__systemMessage': message},
+      'restaurantSubmittedCount': 0,
+      'votes': <String, int>{},
+      'votedCount': 0,
+      'selectedCategory': FieldValue.delete(),
+      'finalFood': FieldValue.delete(),
+      'decisionMethod': FieldValue.delete(),
+    });
+
+    await batch.commit();
+  }
+
+  Future<void> startRestaurantInput(String roomId) async {
+    await _rooms.doc(roomId).update({
+      'status': 'restaurant_inputting',
+      'restaurantSubmittedCount': 0,
+      'recommendations': <String>[],
+      'recommendationReasons': <String, String>{},
+      'votes': <String, int>{},
+      'votedCount': 0,
+      'finalFood': FieldValue.delete(),
+      'decisionMethod': FieldValue.delete(),
+    });
+  }
+
+  Future<void> submitRestaurantSuggestions(
+    String roomId,
+    String userId,
+    List<String> restaurants,
+  ) async {
+    await _rooms
+        .doc(roomId)
+        .collection('restaurantSuggestions')
+        .doc(userId)
+        .set({
+          'restaurants': restaurants,
+          'submittedAt': Timestamp.fromDate(DateTime.now()),
+        });
+
+    await _rooms.doc(roomId).update({
+      'restaurantSubmittedCount': FieldValue.increment(1),
+    });
+  }
+
+  Future<bool> hasSubmittedRestaurantSuggestions(
+    String roomId,
+    String userId,
+  ) async {
+    final doc = await _rooms
+        .doc(roomId)
+        .collection('restaurantSuggestions')
+        .doc(userId)
+        .get();
+    return doc.exists;
+  }
+
+  Future<List<String>> getRestaurantCandidates(String roomId) async {
+    final snap = await _rooms
+        .doc(roomId)
+        .collection('restaurantSuggestions')
+        .get();
+    final restaurants = <String>{};
+    for (final doc in snap.docs) {
+      final data = doc.data();
+      for (final name in List<String>.from(data['restaurants'] ?? [])) {
+        final trimmed = name.trim();
+        if (trimmed.isNotEmpty) {
+          restaurants.add(trimmed);
+        }
+      }
+    }
+    return restaurants.toList()..sort();
+  }
+
+  Future<void> saveRestaurantCandidates(
+    String roomId,
+    List<String> candidates,
+  ) async {
+    final votesInit = {for (final f in candidates) f: 0};
+    await _rooms.doc(roomId).update({
+      'status': 'restaurant_voting',
+      'recommendations': candidates,
+      'votes': votesInit,
+      'votedCount': 0,
+      'recommendationReasons': <String, String>{},
+      'finalFood': FieldValue.delete(),
+      'decisionMethod': FieldValue.delete(),
+    });
+  }
+
+  Future<void> submitRestaurantVotes(
+    String roomId,
+    List<String> selectedFoods,
+  ) async {
+    final Map<String, dynamic> updates = {};
+    for (final food in selectedFoods) {
+      updates['votes.$food'] = FieldValue.increment(1);
+    }
+    updates['votedCount'] = FieldValue.increment(1);
+    await _rooms.doc(roomId).update(updates);
+  }
+
+  Future<void> startRestaurantRevoteSelection(String roomId) async {
+    await _rooms.doc(roomId).update({
+      'status': 'restaurant_revote_select',
+      'finalFood': FieldValue.delete(),
+      'decisionMethod': FieldValue.delete(),
+    });
+  }
+
+  Future<void> resetRestaurantVotes(String roomId, List<String> foods) async {
+    final votesInit = {for (final f in foods) f: 0};
+    await _rooms.doc(roomId).update({
+      'status': 'restaurant_voting',
+      'recommendations': foods,
+      'votes': votesInit,
+      'votedCount': 0,
+      'finalFood': FieldValue.delete(),
+      'decisionMethod': FieldValue.delete(),
+    });
+  }
+
   Future<void> submitVotes(String roomId, List<String> selectedFoods) async {
     final Map<String, dynamic> updates = {};
     for (final food in selectedFoods) {
@@ -130,10 +283,7 @@ class RoomService {
 
   Future<void> resetVotes(String roomId, List<String> foods) async {
     final votesInit = {for (final f in foods) f: 0};
-    await _rooms.doc(roomId).update({
-      'votes': votesInit,
-      'votedCount': 0,
-    });
+    await _rooms.doc(roomId).update({'votes': votesInit, 'votedCount': 0});
   }
 
   Future<void> setFinalFood(String roomId, String food, String method) async {
