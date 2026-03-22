@@ -268,7 +268,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 padding: const EdgeInsets.fromLTRB(20, 18, 20, 32),
                 child: Column(
                   children: [
-                    _buildIntroSection(),
+                    
                     const SizedBox(height: 18),
                     _buildActionSection(),
 
@@ -442,29 +442,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildIntroSection() {
-    return Column(
-      children: [
-        Row(
-          children: const [
-            Expanded(
-              child: _FeatureCard(
-                imageAsset: 'assets/like.png',
-                title: '먹고 싶은 음식',
-              ),
-            ),
-            SizedBox(width: 14),
-            Expanded(
-              child: _FeatureCard(
-                imageAsset: 'assets/hate.png',
-                title: '먹기 싫은 음식',
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
+ 
 
   Widget _buildHeader() {
     return Padding(
@@ -476,8 +454,7 @@ class _HomeScreenState extends State<HomeScreen> {
           gradient: const LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [Color(0xFF202633), Color(0xFF343B4F), Color(0xFFFF925B)],
-            stops: [0.0, 0.46, 1.0],
+            colors: [Color(0xFFFF7A45), Color(0xFFFF9A62), Color(0xFFFFB07A)],
           ),
           borderRadius: BorderRadius.circular(34),
           boxShadow: [

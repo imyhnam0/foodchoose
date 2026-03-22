@@ -121,18 +121,53 @@ class _WaitingScreenState extends State<WaitingScreen>
   }
 
   Widget _buildCenterIllustration(bool isRecommending) {
+    if (isRecommending) {
+      return ScaleTransition(
+        scale: _pulseAnimation,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // 글로우 효과
+            Container(
+              width: 155,
+              height: 155,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [
+                    AppColors.primary.withOpacity(0.28),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+            ),
+            // 계란 모양
+            ClipOval(
+              child: Container(
+                width: 108,
+                height: 143,
+                decoration: const BoxDecoration(
+                  gradient: AppColors.headerGradient,
+                ),
+                child: const Center(
+                  child: Text('🍳', style: TextStyle(fontSize: 52)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Container(
       width: 160,
       height: 160,
       decoration: BoxDecoration(
-        gradient: isRecommending
-            ? AppColors.purpleGradient
-            : AppColors.headerGradient,
+        gradient: AppColors.headerGradient,
         borderRadius: BorderRadius.circular(48),
         boxShadow: [
           BoxShadow(
-            color: (isRecommending ? AppColors.secondary : AppColors.primary)
-                .withOpacity(0.3),
+            color: AppColors.primary.withOpacity(0.3),
             blurRadius: 28,
             offset: const Offset(0, 10),
           ),
@@ -141,10 +176,7 @@ class _WaitingScreenState extends State<WaitingScreen>
       child: Center(
         child: ScaleTransition(
           scale: _pulseAnimation,
-          child: Text(
-            isRecommending ? '🤖' : '⏳',
-            style: const TextStyle(fontSize: 64),
-          ),
+          child: const Text('⏳', style: TextStyle(fontSize: 64)),
         ),
       ),
     );
@@ -152,9 +184,10 @@ class _WaitingScreenState extends State<WaitingScreen>
 
   Widget _buildRecommendingState() {
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         const Text(
-          '재미나이가 분석 중이에요!',
+          '분석중...',
           textAlign: TextAlign.center,
           style: TextStyle(
             fontSize: 24,
@@ -185,6 +218,7 @@ class _WaitingScreenState extends State<WaitingScreen>
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
               SizedBox(
                 width: 18,

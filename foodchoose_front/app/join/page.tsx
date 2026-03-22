@@ -4,19 +4,22 @@ import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { auth, db } from "@/lib/firebase";
-import { signInAnonymously } from "firebase/auth";
+import { signInAnonymously, signOut } from "firebase/auth";
 import {
   collection,
   query,
   where,
   limit,
   getDocs,
+  getDoc,
   doc,
   onSnapshot,
   updateDoc,
   setDoc,
   increment,
   Timestamp,
+  deleteDoc,
+  deleteField,
 } from "firebase/firestore";
 
 /* ───── 타입 ───── */
@@ -30,6 +33,7 @@ interface Room {
   recommendations: string[];
   recommendationReasons: Record<string, string>;
   votes: Record<string, number>;
+  votedCount: number;
   finalFood?: string;
   decisionMethod?: string;
   participants: Record<string, string>; // uid → 닉네임
@@ -58,6 +62,7 @@ function JoinContent() {
   const [nickname, setNickname] = useState("");
   const joinedRef = useRef(false);
   const appCheckDoneRef = useRef(false);
+  const roomUnsubRef = useRef<(() => void) | null>(null);
 
   /* ── 0) 앱 열기 시도 → 1.5초 후 없으면 웹으로 진행 ── */
   useEffect(() => {
@@ -137,7 +142,8 @@ function JoinContent() {
           });
         }
 
-        onSnapshot(doc(db, "rooms", roomId), (docSnap) => {
+        roomUnsubRef.current?.();
+        roomUnsubRef.current = onSnapshot(doc(db, "rooms", roomId), (docSnap) => {
           if (!docSnap.exists()) return;
           const d = docSnap.data();
           setRoom({
@@ -150,6 +156,7 @@ function JoinContent() {
             recommendations: d.recommendations ?? [],
             recommendationReasons: d.recommendationReasons ?? {},
             votes: d.votes ?? {},
+            votedCount: d.votedCount ?? 0,
             finalFood: d.finalFood,
             decisionMethod: d.decisionMethod,
             participants: d.participants ?? {},
@@ -162,6 +169,54 @@ function JoinContent() {
     },
     [code, uid],
   );
+
+  useEffect(() => {
+    return () => {
+      roomUnsubRef.current?.();
+    };
+  }, []);
+
+  const leaveRoom = useCallback(async () => {
+    if (!room || !uid) return;
+    const shouldLeave = window.confirm(
+      room.hostId === uid
+        ? "방장이 나가면 현재 방이 종료돼요. 나갈까요?"
+        : "지금 나가면 방에서 빠지게 돼요. 나갈까요?",
+    );
+    if (!shouldLeave) return;
+
+    try {
+      roomUnsubRef.current?.();
+      roomUnsubRef.current = null;
+
+      if (room.hostId === uid) {
+        await deleteDoc(doc(db, "rooms", room.id));
+      } else {
+        const preferenceRef = doc(db, "rooms", room.id, "preferences", uid);
+        const preferenceSnap = await getDoc(preferenceRef);
+        const updates: Record<string, unknown> = {
+          participantCount: increment(-1),
+          [`participants.${uid}`]: deleteField(),
+        };
+
+        if (preferenceSnap.exists()) {
+          updates.submittedCount = increment(-1);
+          await deleteDoc(preferenceRef);
+        }
+
+        await updateDoc(doc(db, "rooms", room.id), updates);
+      }
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "알 수 없는 오류";
+      window.alert(`방에서 나가지 못했어요: ${message}`);
+      return;
+    }
+
+    joinedRef.current = false;
+    setRoom(null);
+    await signOut(auth).catch(() => undefined);
+    window.location.href = "/";
+  }, [room, uid]);
 
   /* ── 3) room.status 변경 → phase 전환 ── */
   useEffect(() => {
@@ -190,18 +245,24 @@ function JoinContent() {
 
   return (
     <>
-      {phase === "lobby" && <LobbyView room={room} />}
+      {phase === "lobby" && <LobbyView room={room} onLeave={leaveRoom} uid={uid} />}
       {phase === "input" && (
         <InputView
           room={room}
           uid={uid}
           nickname={nickname}
           onDone={() => setPhase("waiting")}
+          onLeave={leaveRoom}
+          isHost={room.hostId === uid}
         />
       )}
-      {phase === "waiting" && <WaitingView room={room} />}
-      {phase === "voting" && <VotingView room={room} uid={uid} />}
-      {phase === "done" && <DoneView room={room} />}
+      {phase === "waiting" && (
+        <WaitingView room={room} onLeave={leaveRoom} isHost={room.hostId === uid} />
+      )}
+      {phase === "voting" && (
+        <VotingView room={room} uid={uid} onLeave={leaveRoom} isHost={room.hostId === uid} />
+      )}
+      {phase === "done" && <DoneView room={room} onLeave={leaveRoom} isHost={room.hostId === uid} />}
     </>
   );
 }
@@ -235,84 +296,31 @@ function NicknameView({ onSubmit }: { onSubmit: (name: string) => void }) {
 
   return (
     <PageWrapper>
-      <GradientHeader>
-        <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-[12px] font-semibold tracking-[0.18em] text-white/82">
-          <span className="h-2 w-2 rounded-full bg-[#ffba78]" />
-          QUICK JOIN
-        </div>
-        <HeaderIcon />
-        <HeaderTitle>뭐 먹을건데</HeaderTitle>
-        <HeaderDesc>
-          방에 입장하기 전에 닉네임을 정해주세요.
-          <br />
-          친구들이 바로 알아볼 수 있게 보여집니다.
-        </HeaderDesc>
-      </GradientHeader>
-      <div className="px-5">
-        <div className="relative -mt-9 rounded-[30px] border border-white/70 bg-white/92 p-5 shadow-[0_20px_48px_rgba(32,38,51,0.12)] backdrop-blur-sm">
-          <div className="mb-5 flex items-start justify-between gap-4">
-            <div>
-              <p className="text-[12px] font-bold tracking-[0.18em] text-[#ff7f50]">
-                NICKNAME
-              </p>
-              <h2 className="mt-1 text-[24px] font-black tracking-[-0.05em] text-[#202633]">
-                어떤 이름으로
-                <br />
-                들어갈까요?
-              </h2>
-            </div>
-            <div className="rounded-[18px] bg-[#fff4ed] px-3 py-2 text-[12px] font-semibold text-[#ff7a45]">
-              최대 10자
-            </div>
+      <div className="flex min-h-[calc(100vh-40px)] items-center justify-center">
+        <div className="w-full max-w-[380px] rounded-[30px] border border-white/80 bg-white/94 p-6 shadow-[0_24px_54px_rgba(32,38,51,0.16)] backdrop-blur-sm">
+          <h1 className="text-[30px] font-black leading-[1.15] tracking-[-0.06em] text-[#202633]">
+            어떤 이름으로
+            <br />
+            들어갈까요?
+          </h1>
+
+          <div className="mt-5 rounded-[22px] border border-[#ebe6e0] bg-[linear-gradient(180deg,#fffdfa_0%,#fff4ed_100%)] px-5 py-4">
+            <input
+              type="text"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submit()}
+              placeholder="이름 입력"
+              maxLength={10}
+              autoFocus
+              className="w-full bg-transparent text-[22px] font-black tracking-[-0.04em] text-[#202633] placeholder:text-[#c7ccd5] outline-none"
+            />
           </div>
 
-          <div className="mb-4 rounded-[22px] border border-[#ebe6e0] bg-[linear-gradient(180deg,#fffdfa_0%,#fff4ed_100%)] p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-[12px] font-semibold text-[#5d677d]">
-                프로필 이름
-              </span>
-              <span className="text-[12px] font-medium text-[#a1a6b1]">
-                {value.trim().length}/10
-              </span>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[16px] bg-[#202633] text-xl text-white">
-                {value.trim().charAt(0) || "?"}
-              </div>
-              <input
-                type="text"
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && submit()}
-                placeholder="예) 홍길동"
-                maxLength={10}
-                autoFocus
-                className="w-full bg-transparent text-[22px] font-black tracking-[-0.04em] text-[#202633] placeholder:text-[#c7ccd5] outline-none"
-              />
-            </div>
-          </div>
-
-          <div className="mb-5 flex flex-wrap gap-2">
-            {["배고픈호랑이", "치킨러버", "오늘은한식", "매운맛장인"].map((preset) => (
-              <button
-                key={preset}
-                type="button"
-                onClick={() => setValue(preset)}
-                className="rounded-full border border-[#ebe6e0] bg-[#fcfaf8] px-3 py-2 text-[13px] font-medium text-[#5d677d] transition hover:border-[#ffb08e] hover:text-[#ff7a45]"
-              >
-                {preset}
-              </button>
-            ))}
-          </div>
-
-          <GradientButton onClick={submit} disabled={!value.trim()}>
+          <GradientButton onClick={submit} disabled={!value.trim()} className="mt-5">
             입장하기
           </GradientButton>
         </div>
-
-        <p className="px-2 pt-4 text-center text-[13px] leading-5 text-[#7b808a]">
-          닉네임은 방 참가자 목록과 결과 화면에 표시됩니다.
-        </p>
       </div>
     </PageWrapper>
   );
@@ -335,7 +343,15 @@ function ErrorView({ message }: { message: string }) {
 }
 
 /* ─────────────────── LobbyView ─────────────────── */
-function LobbyView({ room }: { room: Room }) {
+function LobbyView({
+  room,
+  onLeave,
+  uid,
+}: {
+  room: Room;
+  onLeave: () => void;
+  uid: string;
+}) {
   const [copied, setCopied] = useState(false);
 
   const copyCode = () => {
@@ -360,6 +376,7 @@ function LobbyView({ room }: { room: Room }) {
 
   return (
     <PageWrapper>
+      <RoomTopBar onLeave={onLeave} isHost={room.hostId === uid} />
       {/* 헤더 */}
       <div
         className="bg-gradient-to-br from-[#FF7A45] to-[#FFA07A] w-full text-white rounded-b-[32px] px-6 pt-7 pb-7"
@@ -478,11 +495,15 @@ function InputView({
   uid,
   nickname,
   onDone,
+  onLeave,
+  isHost,
 }: {
   room: Room;
   uid: string;
   nickname: string;
   onDone: () => void;
+  onLeave: () => void;
+  isHost: boolean;
 }) {
   const [wants, setWants] = useState<string[]>([]);
   const [donts, setDonts] = useState<string[]>([]);
@@ -526,6 +547,7 @@ function InputView({
 
   return (
     <PageWrapper>
+      <RoomTopBar onLeave={onLeave} isHost={isHost} />
       <div
         className="bg-gradient-to-br from-[#FF6B35] to-[#FF8C69] w-full text-white rounded-b-[32px] px-6 pt-8 pb-8 text-center"
         style={{ boxShadow: "0 8px 24px rgba(255,107,53,0.22)" }}
@@ -543,8 +565,14 @@ function InputView({
         {/* 먹고 싶은 음식 */}
         <div>
           <div className="flex items-center gap-3 mb-3">
-            <div className="w-9 h-9 rounded-[10px] bg-[#00B894]/[0.12] flex items-center justify-center text-lg">
-              ❤️
+            <div className="flex h-14 w-14 items-center justify-center rounded-[16px] bg-[#f3fbf8]">
+              <Image
+                src="/like.png"
+                alt="먹고 싶은 음식 아이콘"
+                width={44}
+                height={44}
+                className="h-11 w-11 object-contain"
+              />
             </div>
             <div>
               <p className="text-[15px] font-extrabold text-[#2D3436]">
@@ -593,8 +621,14 @@ function InputView({
         {/* 먹기 싫은 음식 */}
         <div>
           <div className="flex items-center gap-3 mb-3">
-            <div className="w-9 h-9 rounded-[10px] bg-[#E17055]/10 flex items-center justify-center text-lg">
-              🙅
+            <div className="flex h-14 w-14 items-center justify-center rounded-[16px] bg-[#fff4ef]">
+              <Image
+                src="/hate.png"
+                alt="먹기 싫은 음식 아이콘"
+                width={44}
+                height={44}
+                className="h-11 w-11 object-contain"
+              />
             </div>
             <div>
               <p className="text-[15px] font-extrabold text-[#2D3436]">
@@ -644,7 +678,11 @@ function InputView({
           onClick={submit}
           disabled={submitting || wants.length < 3}
         >
-          {submitting ? "제출 중..." : `제출하기 (${wants.length}/3)`}
+          {submitting
+            ? "제출 중..."
+            : wants.length < 3
+              ? `먹고 싶은 음식을 ${3 - wants.length}개 더 입력해주세요`
+              : "제출하기"}
         </GradientButton>
       </div>
     </PageWrapper>
@@ -652,7 +690,15 @@ function InputView({
 }
 
 /* ─────────────────── WaitingView ─────────────────── */
-function WaitingView({ room }: { room: Room }) {
+function WaitingView({
+  room,
+  onLeave,
+  isHost,
+}: {
+  room: Room;
+  onLeave: () => void;
+  isHost: boolean;
+}) {
   const allDone = room.submittedCount >= room.participantCount;
   const progress =
     room.participantCount > 0
@@ -661,6 +707,7 @@ function WaitingView({ room }: { room: Room }) {
 
   return (
     <PageWrapper>
+      <RoomTopBar onLeave={onLeave} isHost={isHost} />
       <div
         className="bg-gradient-to-br from-[#FF6B35] to-[#FF8C69] w-full text-white rounded-b-[32px] px-6 pt-8 pb-8 text-center"
         style={{ boxShadow: "0 8px 24px rgba(255,107,53,0.22)" }}
@@ -670,34 +717,73 @@ function WaitingView({ room }: { room: Room }) {
         </h1>
       </div>
       <div className="px-7 pt-10 pb-8 flex flex-col items-center">
-        <div className="text-[64px] mb-6">🍳</div>
+        {/* 계란 모양 일러스트 */}
+        <div className="relative flex items-center justify-center mb-8">
+          {/* 글로우 */}
+          <div className="absolute w-[150px] h-[150px] rounded-full bg-[radial-gradient(circle,rgba(255,107,53,0.28)_0%,transparent_70%)]" />
+          {/* 계란 (oval) */}
+          <div
+            className="relative flex items-center justify-center bg-gradient-to-br from-[#FF7A45] to-[#FFB07A] text-[52px]"
+            style={{
+              width: 108,
+              height: 143,
+              borderRadius: "50%",
+              animation: "pulse 1.2s ease-in-out infinite alternate",
+            }}
+          >
+            🍳
+          </div>
+        </div>
+
         {allDone ? (
           <>
-            <p className="text-[19px] font-extrabold text-[#2D3436] text-center mb-2 leading-8">
-              AI가 음식을
-              <br />
-              추천하고 있어요...
+            <p className="text-[22px] font-black tracking-[-0.04em] text-[#2D3436] text-center mb-2">
+              분석중...
             </p>
-            <div className="mt-6">
-              <Spinner />
+            <p className="text-[14px] text-[#636E72] text-center leading-6 mb-6">
+              모두의 선호도를 바탕으로
+              <br />
+              최선의 메뉴를 찾고 있어요 🔍
+            </p>
+            <div className="flex items-center gap-3 bg-[#FF8C69]/[0.08] rounded-[16px] border border-[#FF8C69]/15 px-5 py-3">
+              <Spinner small />
+              <span className="text-[14px] font-semibold text-[#FF8C69]">AI 추천 생성 중...</span>
             </div>
           </>
         ) : (
           <>
-            <p className="text-[19px] font-extrabold text-[#2D3436] text-center mb-8 leading-8">
-              친구들이 선호도를
+            <p className="text-[22px] font-black tracking-[-0.04em] text-[#2D3436] text-center mb-2">
+              친구들을 기다리는 중...
+            </p>
+            <p className="text-[14px] text-[#636E72] text-center leading-6 mb-8">
+              모두가 선호도를 제출하면
               <br />
-              입력하고 있어요
+              자동으로 AI 추천이 시작돼요!
             </p>
-            <div className="w-full bg-[#DFE6E9] rounded-full h-3 overflow-hidden mb-3">
-              <div
-                className="bg-gradient-to-r from-[#FF6B35] to-[#FF8C69] h-full rounded-full transition-all duration-500"
-                style={{ width: `${progress * 100}%` }}
-              />
+            <div className="w-full bg-white rounded-[20px] border border-[#DFE6E9] p-5 shadow-[0_4px_12px_rgba(0,0,0,0.04)]">
+              <div className="flex justify-between mb-3">
+                <span className="text-[13px] font-medium text-[#636E72]">제출 현황</span>
+                <span className="text-[15px] font-extrabold text-[#FF6B35]">
+                  {room.submittedCount} / {room.participantCount}명 완료
+                </span>
+              </div>
+              <div className="w-full bg-[#DFE6E9] rounded-full h-3 overflow-hidden mb-3">
+                <div
+                  className="bg-gradient-to-r from-[#FF6B35] to-[#FF8C69] h-full rounded-full transition-all duration-500"
+                  style={{ width: `${progress * 100}%` }}
+                />
+              </div>
+              <div className="flex justify-center gap-2 mt-1">
+                {Array.from({ length: room.participantCount }).map((_, i) => (
+                  <div
+                    key={i}
+                    className={`w-2.5 h-2.5 rounded-full transition-colors duration-300 ${
+                      i < room.submittedCount ? "bg-[#FF6B35]" : "bg-[#DFE6E9]"
+                    }`}
+                  />
+                ))}
+              </div>
             </div>
-            <p className="text-[#636E72] text-[14px]">
-              {room.submittedCount} / {room.participantCount}명 완료
-            </p>
           </>
         )}
       </div>
@@ -706,17 +792,60 @@ function WaitingView({ room }: { room: Room }) {
 }
 
 /* ─────────────────── VotingView ─────────────────── */
-function VotingView({ room, uid }: { room: Room; uid: string }) {
-  const [myVote, setMyVote] = useState<string | null>(null);
-  const medals = ["🥇", "🥈", "🥉"];
+function VotingView({
+  room,
+  uid,
+  onLeave,
+  isHost,
+}: {
+  room: Room;
+  uid: string;
+  onLeave: () => void;
+  isHost: boolean;
+}) {
+  const [myVotes, setMyVotes] = useState<Set<string>>(new Set());
+  const [voteSubmitted, setVoteSubmitted] = useState(false);
+  const medals = ["1", "2", "3"];
+  const rankBg = ["#FFF8E7", "#F5F5F5", "#FDF3EB"];
+  const rankColor = ["#FDB74A", "#9E9E9E", "#CD7F32"];
   const totalVotes = Object.values(room.votes).reduce((a, b) => a + b, 0);
-  const isHost = room.hostId === uid;
+  const allVoted =
+    room.participantCount > 0 && room.votedCount >= room.participantCount;
 
-  const vote = async (food: string) => {
-    if (myVote) return;
-    setMyVote(food);
+  // 재투표 감지: votedCount가 0으로 리셋되면 로컬 상태 초기화
+  useEffect(() => {
+    if (room.votedCount === 0 && voteSubmitted) {
+      setMyVotes(new Set());
+      setVoteSubmitted(false);
+    }
+  }, [room.votedCount, voteSubmitted]);
+
+  const toggleVote = (food: string) => {
+    if (voteSubmitted) return;
+    setMyVotes((prev) => {
+      const next = new Set(prev);
+      if (next.has(food)) next.delete(food);
+      else next.add(food);
+      return next;
+    });
+  };
+
+  const submitVotes = async () => {
+    if (voteSubmitted || myVotes.size === 0) return;
+    setVoteSubmitted(true);
+    const updates: Record<string, unknown> = { votedCount: increment(1) };
+    myVotes.forEach((food) => {
+      updates[`votes.${food}`] = increment(1);
+    });
+    await updateDoc(doc(db, "rooms", room.id), updates);
+  };
+
+  const resetVotes = async () => {
+    const votesInit: Record<string, number> = {};
+    room.recommendations.forEach((f) => (votesInit[f] = 0));
     await updateDoc(doc(db, "rooms", room.id), {
-      [`votes.${food}`]: increment(1),
+      votes: votesInit,
+      votedCount: 0,
     });
   };
 
@@ -742,103 +871,271 @@ function VotingView({ room, uid }: { room: Room; uid: string }) {
     });
   };
 
+  // 투표 완료 후 대기 화면
+  if (voteSubmitted && !allVoted) {
+    const remaining = room.participantCount - room.votedCount;
+    return (
+      <PageWrapper>
+        <RoomTopBar onLeave={onLeave} isHost={isHost} />
+        <div className="flex flex-col items-center justify-center px-8 pt-16 pb-8">
+          <div
+            className="w-[120px] h-[120px] rounded-[36px] flex items-center justify-center text-[52px] mb-9"
+            style={{
+              background: "linear-gradient(135deg, #FF7A45 0%, #FFA07A 100%)",
+              boxShadow: "0 10px 28px rgba(255,122,69,0.30)",
+            }}
+          >
+            🗳️
+          </div>
+          <p className="text-[26px] font-black tracking-[-0.05em] text-[#202633] text-center mb-3">
+            투표 완료!
+          </p>
+          <p className="text-[16px] text-[#636E72] text-center leading-7 mb-8">
+            {remaining}명이 더 투표해야 해요
+            <br />
+            잠시만 기다려주세요!
+          </p>
+          <div className="w-full bg-white rounded-[20px] border border-[#DFE6E9] p-5 shadow-[0_4px_12px_rgba(0,0,0,0.04)]">
+            <div className="flex justify-between mb-3">
+              <span className="text-[13px] font-medium text-[#636E72]">투표 현황</span>
+              <span className="text-[15px] font-extrabold text-[#FF6B35]">
+                {room.votedCount} / {room.participantCount}명 완료
+              </span>
+            </div>
+            <div className="w-full bg-[#DFE6E9] rounded-full h-3 overflow-hidden mb-3">
+              <div
+                className="bg-gradient-to-r from-[#FF6B35] to-[#FF8C69] h-full rounded-full transition-all duration-500"
+                style={{
+                  width: `${room.participantCount > 0 ? (room.votedCount / room.participantCount) * 100 : 0}%`,
+                }}
+              />
+            </div>
+            <div className="flex justify-center gap-2">
+              {Array.from({ length: room.participantCount }).map((_, i) => (
+                <div
+                  key={i}
+                  className={`w-2.5 h-2.5 rounded-full transition-colors duration-300 ${
+                    i < room.votedCount ? "bg-[#FF6B35]" : "bg-[#DFE6E9]"
+                  }`}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      </PageWrapper>
+    );
+  }
+
   return (
     <PageWrapper>
+      <RoomTopBar onLeave={onLeave} isHost={isHost} />
       <div
-        className="bg-gradient-to-br from-[#FF6B35] to-[#FF8C69] w-full text-white rounded-b-[32px] px-6 pt-8 pb-8 text-center"
+        className="bg-gradient-to-br from-[#FF7A45] to-[#FFA07A] w-full text-white rounded-b-[28px] px-6 pt-5 pb-5"
         style={{ boxShadow: "0 8px 24px rgba(255,107,53,0.22)" }}
       >
-        <h1 className="text-[28px] font-black tracking-[-0.5px]">
-          AI 추천 Top 3
-        </h1>
-        <p className="mt-1 text-[14px] text-white/80">
-          마음에 드는 메뉴에 투표해요!
-        </p>
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-[10px] bg-white/20 flex items-center justify-center text-lg">
+            🍽️
+          </div>
+          <div>
+            <p className="text-[18px] font-extrabold text-white">AI 추천 Top 3 🎯</p>
+            <p className="text-[12px] text-white/80">마음에 드는 메뉴를 선택해 투표해주세요!</p>
+          </div>
+        </div>
       </div>
 
-      <div className="px-6 pt-6 pb-8 space-y-4">
+      <div className="px-5 pt-5 pb-6 space-y-3">
         {room.recommendations.map((food, i) => {
           const count = room.votes[food] ?? 0;
-          const isMyVote = myVote === food;
+          const voteRatio = totalVotes > 0 ? count / totalVotes : 0;
+          const isSelected = myVotes.has(food);
           return (
-            <div
+            <button
               key={food}
-              className={`bg-white rounded-[14px] border-2 p-4 flex items-start gap-4 transition ${
-                isMyVote
-                  ? "border-[#FF6B35] bg-[#FF6B35]/[0.04]"
-                  : "border-[#DFE6E9]"
+              onClick={() => toggleVote(food)}
+              disabled={voteSubmitted}
+              className={`w-full text-left bg-white rounded-[18px] border-2 p-4 transition ${
+                isSelected
+                  ? "border-[#FF6B35] shadow-[0_4px_14px_rgba(255,107,53,0.18)]"
+                  : "border-[#DFE6E9] hover:border-[#FF8C69]/50"
               }`}
+              style={{ backgroundColor: isSelected ? rankBg[i] : "white" }}
             >
-              <span className="text-3xl shrink-0">{medals[i]}</span>
-              <div className="flex-1 min-w-0">
-                <p className="text-[17px] font-extrabold text-[#2D3436]">
-                  {food}
-                </p>
-                {room.recommendationReasons[food] && (
-                  <p className="text-[12px] text-[#636E72] mt-1 leading-5">
-                    {room.recommendationReasons[food]}
-                  </p>
-                )}
-                {totalVotes > 0 && (
-                  <p className="text-[13px] font-medium text-[#636E72] mt-1">
-                    {count}표
-                  </p>
-                )}
-              </div>
-              {!myVote ? (
-                <button
-                  onClick={() => vote(food)}
-                  className="shrink-0 bg-gradient-to-br from-[#FF6B35] to-[#FF8C69] text-white font-bold px-4 py-2 rounded-[10px] text-[14px] transition hover:opacity-90"
+              <div className="flex items-center gap-3">
+                {/* 순위 뱃지 */}
+                <div
+                  className="w-11 h-11 rounded-[12px] flex items-center justify-center shrink-0 border"
+                  style={{
+                    backgroundColor: rankBg[i],
+                    borderColor: `${rankColor[i]}66`,
+                  }}
                 >
-                  투표
-                </button>
-              ) : isMyVote ? (
-                <span className="text-[#FF6B35] text-2xl shrink-0 font-bold">
-                  ✓
-                </span>
-              ) : null}
-            </div>
+                  <span
+                    className="text-[22px] font-black"
+                    style={{ color: rankColor[i] }}
+                  >
+                    {medals[i]}
+                  </span>
+                </div>
+                {/* 음식명 + 이유 */}
+                <div className="flex-1 min-w-0">
+                  <p className="text-[19px] font-extrabold text-[#2D3436] truncate">
+                    {food}
+                  </p>
+                  {room.recommendationReasons[food] && (
+                    <p className="text-[12px] text-[#636E72] mt-0.5 truncate leading-5">
+                      {room.recommendationReasons[food]}
+                    </p>
+                  )}
+                </div>
+                {/* 체크박스 (회색 → 초록) */}
+                {!voteSubmitted ? (
+                  <div
+                    className="w-7 h-7 rounded-[6px] flex items-center justify-center shrink-0 border-2 transition-all duration-200"
+                    style={{
+                      backgroundColor: isSelected ? "#00B894" : "transparent",
+                      borderColor: isSelected ? "#00B894" : "#9E9E9E",
+                    }}
+                  >
+                    {isSelected && (
+                      <span className="text-white text-[15px] font-bold leading-none">✓</span>
+                    )}
+                  </div>
+                ) : isSelected ? (
+                  <div
+                    className="w-7 h-7 rounded-[6px] flex items-center justify-center shrink-0 border-2"
+                    style={{ backgroundColor: "#00B894", borderColor: "#00B894" }}
+                  >
+                    <span className="text-white text-[15px] font-bold leading-none">✓</span>
+                  </div>
+                ) : null}
+              </div>
+              {/* 투표 결과 (모두 완료 시에만) */}
+              {allVoted && (
+                <div className="mt-3 flex items-center gap-2">
+                  <div className="flex-1 h-1.5 bg-[#DFE6E9] rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${voteRatio * 100}%`,
+                        backgroundColor: rankColor[i],
+                      }}
+                    />
+                  </div>
+                  <span
+                    className="text-[13px] font-bold shrink-0"
+                    style={{ color: rankColor[i] }}
+                  >
+                    {count}표
+                  </span>
+                </div>
+              )}
+            </button>
           );
         })}
 
-        {isHost ? (
-          <div className="flex gap-3 pt-2">
+        {/* 하단 버튼 영역 */}
+        <div className="space-y-2 pt-1">
+          {/* 투표 완료 버튼 (미제출 시 모두에게) */}
+          {!voteSubmitted ? (
             <button
-              onClick={finalizeVote}
-              className="flex-1 h-14 rounded-[16px] bg-gradient-to-br from-[#FF6B35] to-[#FF8C69] text-white font-extrabold text-[15px] transition hover:opacity-90"
-              style={{ boxShadow: "0 6px 14px rgba(255,107,53,0.30)" }}
+              onClick={submitVotes}
+              disabled={myVotes.size === 0}
+              className={`w-full h-14 rounded-[16px] font-extrabold text-[16px] transition ${
+                myVotes.size > 0
+                  ? "bg-gradient-to-r from-[#FF7A45] to-[#FFA07A] text-white hover:opacity-90"
+                  : "bg-[#DFE6E9] text-[#636E72] cursor-not-allowed"
+              }`}
+              style={
+                myVotes.size > 0
+                  ? { boxShadow: "0 6px 14px rgba(255,107,53,0.30)" }
+                  : undefined
+              }
             >
-              🗳️ 투표 확정
+              {myVotes.size > 0
+                ? `투표 완료 (${myVotes.size}개 선택됨)`
+                : "메뉴를 선택해주세요"}
             </button>
-            <button
-              onClick={pickRandom}
-              className="flex-1 h-14 rounded-[16px] bg-[#FDB74A] text-white font-extrabold text-[15px] transition hover:opacity-90"
-              style={{ boxShadow: "0 6px 14px rgba(253,183,74,0.30)" }}
+          ) : !isHost ? (
+            /* 비방장: 대기 메시지 */
+            <div
+              className={`flex items-center justify-center gap-2 rounded-[14px] border px-5 py-3.5 ${
+                allVoted
+                  ? "bg-[#00B894]/[0.08] border-[#00B894]/20"
+                  : "bg-[#FF8C69]/[0.08] border-[#FF8C69]/15"
+              }`}
             >
-              🎲 랜덤
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center justify-center gap-3 bg-[#FF8C69]/[0.08] rounded-[16px] border border-[#FF8C69]/15 px-5 py-4">
-            <Spinner small />
-            <span className="text-[14px] font-medium text-[#FF8C69]">
-              {!myVote
-                ? "원하는 음식에 투표해주세요!"
-                : "방장이 결과를 확정할 때까지 기다려주세요"}
-            </span>
-          </div>
-        )}
+              {!allVoted && <Spinner small />}
+              <span
+                className={`text-[14px] font-semibold ${
+                  allVoted ? "text-[#00B894]" : "text-[#FF8C69]"
+                }`}
+              >
+                {allVoted
+                  ? "✅ 모두 투표 완료! 방장이 결과를 확정할 거에요"
+                  : `투표 완료! ${room.votedCount}/${room.participantCount}명 완료 중...`}
+              </span>
+            </div>
+          ) : null}
+
+          {/* 방장 전용 섹션 */}
+          {isHost && voteSubmitted && (
+            <div className="space-y-2">
+              {/* 투표 현황 */}
+              <div className="flex items-center justify-center gap-2 bg-[#FF6B35]/[0.08] rounded-[12px] px-4 py-2.5">
+                <span className="text-[13px] font-bold text-[#FF6B35]">
+                  🗳️ {allVoted ? "모두 투표 완료! 결과를 확정해주세요" : `${room.votedCount} / ${room.participantCount}명 투표 완료`}
+                </span>
+              </div>
+              {/* 결과 확정 버튼 (allVoted 시) */}
+              {allVoted && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={finalizeVote}
+                    className="flex-1 h-14 rounded-[16px] bg-gradient-to-r from-[#FF7A45] to-[#FFA07A] text-white font-extrabold text-[15px] transition hover:opacity-90"
+                    style={{ boxShadow: "0 6px 14px rgba(255,107,53,0.30)" }}
+                  >
+                    ✅ 투표 결과 확정
+                  </button>
+                  <button
+                    onClick={pickRandom}
+                    className="flex-1 h-14 rounded-[16px] bg-[#FDB74A] text-white font-extrabold text-[15px] transition hover:opacity-90"
+                    style={{ boxShadow: "0 6px 14px rgba(253,183,74,0.30)" }}
+                  >
+                    🎲 랜덤 뽑기
+                  </button>
+                </div>
+              )}
+              {/* 재투표 버튼 */}
+              <button
+                onClick={resetVotes}
+                className="w-full h-11 rounded-[14px] border border-[#DFE6E9] bg-white text-[#636E72] font-bold text-[14px] transition hover:border-[#FF8C69]/40 hover:text-[#FF7A45]"
+              >
+                🔄 재투표
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </PageWrapper>
   );
 }
 
 /* ─────────────────── DoneView ─────────────────── */
-function DoneView({ room }: { room: Room }) {
+function DoneView({
+  room,
+  onLeave,
+  isHost,
+}: {
+  room: Room;
+  onLeave: () => void;
+  isHost: boolean;
+}) {
   const method =
     room.decisionMethod === "vote" ? "🗳️ 투표로 결정!" : "🎲 랜덤으로 결정!";
   return (
     <PageWrapper>
+      <RoomTopBar onLeave={onLeave} isHost={isHost} />
       <div
         className="bg-gradient-to-br from-[#FF6B35] to-[#FDB74A] w-full text-white rounded-b-[32px] px-6 pt-8 pb-8 text-center"
         style={{ boxShadow: "0 8px 24px rgba(255,107,53,0.25)" }}
@@ -886,11 +1183,11 @@ function PageWrapper({ children }: { children: React.ReactNode }) {
 function GradientHeader({ children }: { children: React.ReactNode }) {
   return (
     <div
-      className="relative overflow-hidden rounded-[34px] border border-white/70 bg-[linear-gradient(145deg,#202633_0%,#343b4f_42%,#ff925b_140%)] px-7 pb-12 pt-8 text-center text-white"
-      style={{ boxShadow: "0 24px 60px rgba(43, 37, 32, 0.16)" }}
+      className="relative overflow-hidden rounded-[34px] border border-white/70 bg-[linear-gradient(145deg,#FF7A45_0%,#FF9A62_52%,#FFB07A_100%)] px-7 pb-12 pt-8 text-center text-white"
+      style={{ boxShadow: "0 24px 60px rgba(255,122,69,0.24)" }}
     >
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.2),transparent_40%)]" />
-      <div className="absolute right-[-32px] top-[-28px] h-28 w-28 rounded-full border border-white/15 bg-white/10 blur-2xl" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.22),transparent_40%)]" />
+      <div className="absolute right-[-32px] top-[-28px] h-28 w-28 rounded-full border border-white/20 bg-[#ffd2ba]/20 blur-2xl" />
       <div className="relative">{children}</div>
     </div>
   );
@@ -930,6 +1227,26 @@ function HeaderDesc({ children }: { children: React.ReactNode }) {
   );
 }
 
+function RoomTopBar({
+  onLeave,
+  isHost,
+}: {
+  onLeave: () => void;
+  isHost: boolean;
+}) {
+  return (
+    <div className="mb-4 flex justify-end">
+      <button
+        type="button"
+        onClick={onLeave}
+        className="rounded-full border border-[#eadfd7] bg-white/90 px-4 py-2 text-[13px] font-semibold text-[#6f7785] shadow-[0_8px_20px_rgba(32,38,51,0.07)] transition hover:border-[#ffb08e] hover:text-[#ff7a45]"
+      >
+        {isHost ? "방 종료하고 나가기" : "방 나가기"}
+      </button>
+    </div>
+  );
+}
+
 function GradientButton({
   children,
   onClick,
@@ -943,13 +1260,13 @@ function GradientButton({
   href?: string;
   className?: string;
 }) {
-  const cls = `flex items-center justify-center gap-2 w-full h-14 rounded-[18px] bg-[linear-gradient(135deg,#ff7a45_0%,#ff9a62_100%)] text-white font-extrabold text-[17px] transition hover:opacity-90 active:opacity-80 ${className ?? ""}`;
+  const cls = `flex items-center justify-center gap-2 w-full h-14 rounded-[18px] font-extrabold text-[17px] transition ${className ?? ""}`;
 
   if (href) {
     return (
       <a
         href={href}
-        className={cls}
+        className={`${cls} bg-[linear-gradient(135deg,#ff7a45_0%,#ff9a62_100%)] text-white hover:opacity-90 active:opacity-80`}
         style={{ boxShadow: "0 6px 14px rgba(255,107,53,0.35)" }}
       >
         {children}
@@ -962,7 +1279,11 @@ function GradientButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`${cls} disabled:from-[#DFE6E9] disabled:to-[#DFE6E9] disabled:shadow-none disabled:text-[#636E72] disabled:cursor-not-allowed`}
+      className={`${cls} ${
+        disabled
+          ? "cursor-not-allowed bg-[#DFE6E9] text-[#636E72]"
+          : "bg-[linear-gradient(135deg,#ff7a45_0%,#ff9a62_100%)] text-white hover:opacity-90 active:opacity-80"
+      }`}
       style={
         disabled ? undefined : { boxShadow: "0 6px 14px rgba(255,107,53,0.35)" }
       }

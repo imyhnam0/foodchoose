@@ -12,11 +12,11 @@ export default function Home() {
 
       <div className="mx-auto flex min-h-screen w-full max-w-[440px] flex-col px-5 py-5 sm:py-8">
         <div
-          className="relative overflow-hidden rounded-[34px] border border-white/70 bg-[linear-gradient(145deg,#202633_0%,#343b4f_42%,#ff925b_140%)] px-7 pb-8 pt-7 text-white"
-          style={{ boxShadow: "0 24px 60px rgba(43, 37, 32, 0.16)" }}
+          className="relative overflow-hidden rounded-[34px] border border-white/70 bg-[linear-gradient(145deg,#ff7a45_0%,#ff9a62_52%,#ffb07a_100%)] px-7 pb-8 pt-7 text-white"
+          style={{ boxShadow: "0 24px 60px rgba(255,122,69,0.24)" }}
         >
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.2),transparent_40%)]" />
-          <div className="absolute right-[-32px] top-[-28px] h-28 w-28 rounded-full border border-white/15 bg-white/10 blur-2xl" />
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.22),transparent_40%)]" />
+          <div className="absolute right-[-32px] top-[-28px] h-28 w-28 rounded-full border border-white/20 bg-[#ffd2ba]/20 blur-2xl" />
           <div className="relative">
             <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-[12px] font-semibold tracking-[0.18em] text-white/82">
               <span className="h-2 w-2 rounded-full bg-[#ffba78]" />

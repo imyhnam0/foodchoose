@@ -11,6 +11,7 @@ class Room {
   final List<String> recommendations;
   final Map<String, String> recommendationReasons; // { '피자': '이유...' }
   final Map<String, int> votes;
+  final int votedCount;
   final String? finalFood;
   final String? decisionMethod; // 'vote' | 'random'
   final Map<String, String> participants; // { uid: nickname }
@@ -26,6 +27,7 @@ class Room {
     required this.recommendations,
     required this.recommendationReasons,
     required this.votes,
+    this.votedCount = 0,
     this.finalFood,
     this.decisionMethod,
     this.participants = const {},
@@ -45,6 +47,7 @@ class Room {
       recommendationReasons: Map<String, String>.from(
           data['recommendationReasons'] ?? {}),
       votes: Map<String, int>.from(data['votes'] ?? {}),
+      votedCount: data['votedCount'] as int? ?? 0,
       finalFood: data['finalFood'] as String?,
       decisionMethod: data['decisionMethod'] as String?,
       participants: Map<String, String>.from(data['participants'] ?? {}),
@@ -62,6 +65,7 @@ class Room {
       'recommendations': recommendations,
       'recommendationReasons': recommendationReasons,
       'votes': votes,
+      'votedCount': votedCount,
       'participants': participants,
       if (finalFood != null) 'finalFood': finalFood,
       if (decisionMethod != null) 'decisionMethod': decisionMethod,

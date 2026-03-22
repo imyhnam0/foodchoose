@@ -92,7 +92,7 @@ class _PreferenceInputScreenState extends State<PreferenceInputScreen> {
                   children: [
                     // 먹고 싶은 음식 섹션
                     _FoodInputSection(
-                      emoji: '😋',
+                      imageAsset: 'assets/like.png',
                       title: '먹고 싶은 음식',
                       subtitle: '최소 3개 입력해주세요',
                       hint: '치킨, 피자, 떡볶이...',
@@ -109,7 +109,7 @@ class _PreferenceInputScreenState extends State<PreferenceInputScreen> {
 
                     // 먹기 싫은 음식 섹션
                     _FoodInputSection(
-                      emoji: '🙅',
+                      imageAsset: 'assets/hate.png',
                       title: '먹기 싫은 음식',
                       subtitle: '선택사항이에요',
                       hint: '초밥, 회, 곱창...',
@@ -297,7 +297,7 @@ class _PreferenceInputScreenState extends State<PreferenceInputScreen> {
 }
 
 class _FoodInputSection extends StatelessWidget {
-  final String emoji;
+  final String imageAsset;
   final String title;
   final String subtitle;
   final String hint;
@@ -309,7 +309,7 @@ class _FoodInputSection extends StatelessWidget {
   final ValueChanged<String> onRemove;
 
   const _FoodInputSection({
-    required this.emoji,
+    required this.imageAsset,
     required this.title,
     required this.subtitle,
     required this.hint,
@@ -348,7 +348,7 @@ class _FoodInputSection extends StatelessWidget {
                   color: bgColor,
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Text(emoji, style: const TextStyle(fontSize: 18)),
+                child: Image.asset(imageAsset, width: 28, height: 28, fit: BoxFit.contain),
               ),
               const SizedBox(width: 12),
               Column(

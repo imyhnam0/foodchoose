@@ -119,8 +119,21 @@ class RoomService {
     });
   }
 
-  Future<void> castVote(String roomId, String food) async {
-    await _rooms.doc(roomId).update({'votes.$food': FieldValue.increment(1)});
+  Future<void> submitVotes(String roomId, List<String> selectedFoods) async {
+    final Map<String, dynamic> updates = {};
+    for (final food in selectedFoods) {
+      updates['votes.$food'] = FieldValue.increment(1);
+    }
+    updates['votedCount'] = FieldValue.increment(1);
+    await _rooms.doc(roomId).update(updates);
+  }
+
+  Future<void> resetVotes(String roomId, List<String> foods) async {
+    final votesInit = {for (final f in foods) f: 0};
+    await _rooms.doc(roomId).update({
+      'votes': votesInit,
+      'votedCount': 0,
+    });
   }
 
   Future<void> setFinalFood(String roomId, String food, String method) async {
