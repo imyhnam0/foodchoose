@@ -184,7 +184,14 @@ function JoinContent() {
 
         roomUnsubRef.current?.();
         roomUnsubRef.current = onSnapshot(doc(db, "rooms", roomId), (docSnap) => {
-          if (!docSnap.exists()) return;
+          if (!docSnap.exists()) {
+            // 방이 삭제됨 (방장이 나감)
+            roomUnsubRef.current?.();
+            setRoom(null);
+            setPhase("error");
+            setError("방장이 방을 나가서 방이 종료되었어요.");
+            return;
+          }
           const d = docSnap.data();
           setRoom({
             id: docSnap.id,
@@ -245,7 +252,7 @@ function JoinContent() {
         setPhase("lobby");
         break;
       case "inputting":
-        setPhase(room.submittedCount > 0 ? "category_waiting" : "category_input");
+        setPhase("category_input");
         break;
       case "category_done":
         setPhase("category_done");
@@ -277,7 +284,7 @@ function JoinContent() {
       {phase === "lobby" && (
         <LobbyView room={room} uid={uid} onLeave={leaveRoom} />
       )}
-      {(phase === "category_input" || phase === "category_waiting") && (
+      {phase === "category_input" && (
         <CategoryFlow room={room} uid={uid} />
       )}
       {phase === "category_done" && <CategoryDoneView room={room} uid={uid} />}
@@ -396,6 +403,15 @@ function CategoryFlow({ room, uid }: { room: Room; uid: string }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
+  // 라운드 재시작 감지: submittedCount가 0으로 리셋되면 로컬 상태 초기화
+  useEffect(() => {
+    if (room.submittedCount === 0 && room.status === "inputting" && submitted) {
+      setSubmitted(false);
+      setWants([]);
+      setDonts([]);
+    }
+  }, [room.submittedCount, room.status, submitted]);
+
   useEffect(() => {
     if (
       room.submittedCount >= room.participantCount &&
@@ -412,7 +428,7 @@ function CategoryFlow({ room, uid }: { room: Room; uid: string }) {
             submittedCount: 0,
             recommendationReasons: {
               __systemMessage:
-                "누군가 싫어하는 메뉴 때문에 후보가 남지 않았어요. 다시 골라주세요.",
+                "누군가 먹기 싫은 메뉴 때문에 후보가 남지 않았어요. 다시 골라주세요.",
             },
           });
           return;
@@ -465,8 +481,7 @@ function CategoryFlow({ room, uid }: { room: Room; uid: string }) {
     setSubmitting(false);
   };
 
-  const alreadySubmitted =
-    submitted || (room.submittedCount > 0 && wants.length === 0);
+  const alreadySubmitted = submitted;
   const remaining = Math.max(0, room.participantCount - room.submittedCount);
 
   if (alreadySubmitted) {
@@ -493,12 +508,12 @@ function CategoryFlow({ room, uid }: { room: Room; uid: string }) {
         ) : null}
       </Card>
       <SelectSection
-        title="좋아하는 음식"
+        title="먹고 싶은 음식"
         selected={wants}
         onToggle={(food) => toggle(food, wants, setWants, donts, setDonts)}
       />
       <SelectSection
-        title="싫어하는 음식"
+        title="먹기 싫은 음식"
         selected={donts}
         onToggle={(food) => toggle(food, donts, setDonts, wants, setWants)}
       />

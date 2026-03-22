@@ -43,9 +43,9 @@ class WeightedFoodResult {
 
   String get summary {
     if (dontWantCount == 0) {
-      return '좋아요 $wantCount명, 총점 $score점';
+      return '먹고 싶음 $wantCount명, 총점 $score점';
     }
-    return '좋아요 $wantCount명, 싫어요 $dontWantCount명, 총점 $score점';
+    return '먹고 싶음 $wantCount명, 먹기 싫음 $dontWantCount명, 총점 $score점';
   }
 }
 

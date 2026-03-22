@@ -142,6 +142,17 @@ class RoomService {
     final prefs = await _rooms.doc(roomId).collection('preferences').get();
     final batch = _db.batch();
 
+    // 이전 선택을 저장 (재입력 시 비활성화용)
+    final previousSelections = <String, List<String>>{};
+    for (final pref in prefs.docs) {
+      final data = pref.data();
+      final allFoods = <String>[
+        ...List<String>.from(data['wantFoods'] ?? []),
+        ...List<String>.from(data['dontWantFoods'] ?? []),
+      ];
+      previousSelections[pref.id] = allFoods;
+    }
+
     for (final pref in prefs.docs) {
       batch.delete(pref.reference);
     }
@@ -157,9 +168,22 @@ class RoomService {
       'selectedCategory': FieldValue.delete(),
       'finalFood': FieldValue.delete(),
       'decisionMethod': FieldValue.delete(),
+      'previousSelections': previousSelections,
     });
 
     await batch.commit();
+  }
+
+  Future<List<String>> getPreviousSelections(
+    String roomId,
+    String userId,
+  ) async {
+    final doc = await _rooms.doc(roomId).get();
+    if (!doc.exists) return [];
+    final data = doc.data() as Map<String, dynamic>;
+    final prev = data['previousSelections'] as Map<String, dynamic>?;
+    if (prev == null || !prev.containsKey(userId)) return [];
+    return List<String>.from(prev[userId] ?? []);
   }
 
   Future<void> startRestaurantInput(String roomId) async {

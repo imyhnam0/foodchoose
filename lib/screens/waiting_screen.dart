@@ -49,8 +49,9 @@ class _WaitingScreenState extends State<WaitingScreen>
       if (result == null) {
         await _roomService.restartPreferenceRound(
           room.id,
-          '누군가 싫어하는 음식 때문에 후보가 남지 않았어요. 다시 골라주세요.',
+          '누군가 먹기 싫은 음식 때문에 후보가 남지 않았어요. 다시 골라주세요.',
         );
+        if (mounted) setState(() => _calculating = false);
       } else {
         await _roomService.saveWeightedResult(
           room.id,
@@ -79,6 +80,14 @@ class _WaitingScreenState extends State<WaitingScreen>
     return StreamBuilder<Room>(
       stream: _roomService.roomStream(widget.roomId),
       builder: (context, snapshot) {
+        if (snapshot.hasError || (!snapshot.hasData && snapshot.connectionState == ConnectionState.active)) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) context.go('/');
+          });
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator(color: AppColors.primary)),
+          );
+        }
         if (!snapshot.hasData) {
           return const Scaffold(
             body: Center(

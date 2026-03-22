@@ -45,6 +45,14 @@ class _FinalResultScreenState extends State<FinalResultScreen>
     return StreamBuilder<Room>(
       stream: _roomService.roomStream(widget.roomId),
       builder: (context, snapshot) {
+        if (snapshot.hasError || (!snapshot.hasData && snapshot.connectionState == ConnectionState.active)) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) context.go('/');
+          });
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator(color: AppColors.primary)),
+          );
+        }
         if (!snapshot.hasData) {
           return const Scaffold(
             body: Center(
@@ -143,6 +151,15 @@ class _FinalResultScreenState extends State<FinalResultScreen>
     );
   }
 
+  Future<void> _goHome(Room room) async {
+    final isHost = room.hostId == _authService.userId;
+    if (isHost) {
+      await _roomService.deleteRoom(room.id);
+    }
+    await _authService.signOut();
+    if (mounted) context.go('/');
+  }
+
   Widget _buildCategoryActions(Room room) {
     return Column(
       children: [
@@ -172,7 +189,7 @@ class _FinalResultScreenState extends State<FinalResultScreen>
           width: double.infinity,
           height: 52,
           child: OutlinedButton(
-            onPressed: () => context.go('/'),
+            onPressed: () => _goHome(room),
             child: const Text('아니요, 홈으로 갈게요'),
           ),
         ),
@@ -187,7 +204,7 @@ class _FinalResultScreenState extends State<FinalResultScreen>
           width: double.infinity,
           height: 54,
           child: FilledButton(
-            onPressed: () => context.go('/'),
+            onPressed: () => _goHome(room),
             child: const Text('홈으로 가기'),
           ),
         ),

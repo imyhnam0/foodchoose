@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../services/auth_service.dart';
@@ -22,6 +23,8 @@ class _PreferenceInputScreenState extends State<PreferenceInputScreen> {
   final List<String> _dontWantFoods = [];
   bool _submitted = false;
   String? _systemMessage;
+  List<String> _blockedFoods = [];
+  StreamSubscription? _roomSubscription;
 
   static const _minWant = 1;
 
@@ -29,6 +32,36 @@ class _PreferenceInputScreenState extends State<PreferenceInputScreen> {
   void initState() {
     super.initState();
     _loadSystemMessage();
+    _loadPreviousSelections();
+    _listenRoomDeletion();
+  }
+
+  Future<void> _loadPreviousSelections() async {
+    final userId = _authService.userId;
+    if (userId == null) return;
+    try {
+      final blocked = await _roomService.getPreviousSelections(
+        widget.roomId,
+        userId,
+      );
+      if (!mounted) return;
+      setState(() => _blockedFoods = blocked);
+    } catch (_) {}
+  }
+
+  void _listenRoomDeletion() {
+    _roomSubscription = _roomService.roomStream(widget.roomId).listen(
+      (_) {},
+      onError: (_) {
+        if (mounted) context.go('/');
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _roomSubscription?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadSystemMessage() async {
@@ -108,7 +141,7 @@ class _PreferenceInputScreenState extends State<PreferenceInputScreen> {
     if (_wantFoods.length < _minWant) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('좋아하는 음식 카테고리를 1개 이상 선택해주세요'),
+          content: const Text('먹고 싶은 음식 카테고리를 1개 이상 선택해주세요'),
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
@@ -160,9 +193,10 @@ class _PreferenceInputScreenState extends State<PreferenceInputScreen> {
                     ],
                     _FoodSelectSection(
                       imageAsset: 'assets/like.png',
-                      title: '좋아하는 음식',
+                      title: '먹고 싶은 음식',
                       subtitle: '원하는 카테고리를 모두 선택해주세요',
                       foods: _wantFoods,
+                      disabledFoods: _blockedFoods,
                       themeColor: AppColors.mint,
                       bgColor: AppColors.mintMuted,
                       onTap: (food) =>
@@ -171,9 +205,10 @@ class _PreferenceInputScreenState extends State<PreferenceInputScreen> {
                     const SizedBox(height: 16),
                     _FoodSelectSection(
                       imageAsset: 'assets/hate.png',
-                      title: '싫어하는 음식',
+                      title: '먹기 싫은 음식',
                       subtitle: '빼고 싶은 카테고리를 선택해주세요',
                       foods: _dontWantFoods,
+                      disabledFoods: _blockedFoods,
                       themeColor: AppColors.salmon,
                       bgColor: AppColors.salmonMuted,
                       onTap: (food) =>
@@ -235,7 +270,7 @@ class _PreferenceInputScreenState extends State<PreferenceInputScreen> {
                       ),
                     ),
                     Text(
-                      '좋아하는 것과 싫어하는 것을 골라주세요',
+                      '먹고 싶은 것과 먹기 싫은 것을 골라주세요',
                       style: TextStyle(fontSize: 12, color: AppColors.muted),
                     ),
                   ],
@@ -335,7 +370,7 @@ class _PreferenceInputScreenState extends State<PreferenceInputScreen> {
                     : Text(
                         readyToSubmit
                             ? '선택 완료하고 제출하기'
-                            : '좋아하는 음식 카테고리를 1개 이상 선택해주세요',
+                            : '먹고 싶은 음식 카테고리를 1개 이상 선택해주세요',
                         style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w700,
@@ -356,6 +391,7 @@ class _FoodSelectSection extends StatelessWidget {
   final String title;
   final String subtitle;
   final List<String> foods;
+  final List<String> disabledFoods;
   final Color themeColor;
   final Color bgColor;
   final ValueChanged<String> onTap;
@@ -365,6 +401,7 @@ class _FoodSelectSection extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.foods,
+    this.disabledFoods = const [],
     required this.themeColor,
     required this.bgColor,
     required this.onTap,
@@ -433,8 +470,9 @@ class _FoodSelectSection extends StatelessWidget {
             runSpacing: 8,
             children: kFoodCategories.map((food) {
               final selected = foods.contains(food);
+              final isDisabled = disabledFoods.contains(food);
               return GestureDetector(
-                onTap: () => onTap(food),
+                onTap: isDisabled ? null : () => onTap(food),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 160),
                   padding: const EdgeInsets.symmetric(
@@ -442,12 +480,18 @@ class _FoodSelectSection extends StatelessWidget {
                     vertical: 10,
                   ),
                   decoration: BoxDecoration(
-                    color: selected ? themeColor : bgColor,
+                    color: isDisabled
+                        ? Colors.grey[200]
+                        : selected
+                            ? themeColor
+                            : bgColor,
                     borderRadius: BorderRadius.circular(999),
                     border: Border.all(
-                      color: selected
-                          ? themeColor
-                          : themeColor.withOpacity(0.25),
+                      color: isDisabled
+                          ? Colors.grey[300]!
+                          : selected
+                              ? themeColor
+                              : themeColor.withOpacity(0.25),
                     ),
                   ),
                   child: Text(
@@ -455,7 +499,11 @@ class _FoodSelectSection extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w700,
-                      color: selected ? Colors.white : themeColor,
+                      color: isDisabled
+                          ? Colors.grey[400]
+                          : selected
+                              ? Colors.white
+                              : themeColor,
                     ),
                   ),
                 ),

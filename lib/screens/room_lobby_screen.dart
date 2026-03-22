@@ -85,6 +85,14 @@ class _RoomLobbyScreenState extends State<RoomLobbyScreen> {
     return StreamBuilder<Room>(
       stream: _roomService.roomStream(widget.roomId),
       builder: (context, snapshot) {
+        if (snapshot.hasError || (!snapshot.hasData && snapshot.connectionState == ConnectionState.active)) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) context.go('/');
+          });
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator(color: AppColors.primary)),
+          );
+        }
         if (!snapshot.hasData) {
           return const Scaffold(
             body: Center(

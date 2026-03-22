@@ -180,6 +180,14 @@ class _ResultsScreenState extends State<ResultsScreen> {
     return StreamBuilder<Room>(
       stream: _roomService.roomStream(widget.roomId),
       builder: (context, snapshot) {
+        if (snapshot.hasError || (!snapshot.hasData && !_loadingRestaurantState && snapshot.connectionState == ConnectionState.active)) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) context.go('/');
+          });
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator(color: AppColors.primary)),
+          );
+        }
         if (!snapshot.hasData || _loadingRestaurantState) {
           return const Scaffold(
             body: Center(
